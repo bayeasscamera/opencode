@@ -16,6 +16,7 @@ import { WebSearchTool } from "./websearch"
 import { WriteTool } from "./write"
 import { MemoryTool } from "./memory"
 import { McpStoreTool } from "./mcp-store"
+import { ScheduleTool } from "./schedule"
 
 /**
  * Composes only the shipped Location-scoped built-in tool transforms.
@@ -48,5 +49,6 @@ export const node = makeLocationNode({
     WriteTool.node,
     MemoryTool.node,
     McpStoreTool.node,
+    ScheduleTool.node,
   ],
 })

@@ -38,6 +38,7 @@ import { ToolRegistry } from "./tool/registry"
 import { ToolOutputStore } from "./tool-output-store"
 import { MemoryContext } from "./memory/memory-context"
 import { Memory } from "./memory/memory"
+import { Schedule } from "./schedule/schedule"
 
 export { LocationServiceMap } from "./location-service-map"
 
@@ -80,6 +81,7 @@ export const locationServices = LayerNode.group([
   SessionRunnerLLM.node,
   Memory.node,
   MemoryContext.node,
+  Schedule.node,
 ])
 
 export type LocationServices = LayerNode.Output<typeof locationServices>
