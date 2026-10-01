@@ -12,6 +12,7 @@ import { AppProcess } from "../process"
 import { PermissionV2 } from "../permission"
 import { PositiveInt } from "../schema"
 import { SelfHealing } from "../session/runner/self-healing"
+import { PathGuard } from "../sandbox/path-guard"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -148,6 +149,11 @@ const layer = Layer.effectDiscard(
                 agent: context.agent,
                 source,
               })
+
+              const validation = PathGuard.validateCommand(input.command)
+              if (!validation.allowed) {
+                return yield* Effect.fail(new Error(validation.reason ?? "Command blocked by sandbox path-guard"))
+              }
 
               if ((yield* fs.stat(target.canonical)).type !== "Directory")
                 return yield* Effect.fail(new Error(`Working directory is not a directory: ${target.canonical}`))
