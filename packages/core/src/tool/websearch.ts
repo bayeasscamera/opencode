@@ -56,7 +56,7 @@ export const Input = Schema.Struct({
   ),
 })
 
-export const Provider = Schema.Literals(["exa", "parallel"])
+export const Provider = Schema.Literals(["exa", "parallel", "duckduckgo"])
 export type Provider = typeof Provider.Type
 
 export interface Config {
@@ -73,8 +73,10 @@ export class ConfigService extends Context.Service<ConfigService, Config>()("@op
 export const defaultConfigLayer = Layer.sync(ConfigService, () =>
   ConfigService.of({
     provider:
-      process.env.OPENCODE_WEBSEARCH_PROVIDER === "exa" || process.env.OPENCODE_WEBSEARCH_PROVIDER === "parallel"
-        ? process.env.OPENCODE_WEBSEARCH_PROVIDER
+      process.env.OPENCODE_WEBSEARCH_PROVIDER === "exa" ||
+      process.env.OPENCODE_WEBSEARCH_PROVIDER === "parallel" ||
+      process.env.OPENCODE_WEBSEARCH_PROVIDER === "duckduckgo"
+        ? (process.env.OPENCODE_WEBSEARCH_PROVIDER as Provider)
         : undefined,
     enableExa: truthy("OPENCODE_EXPERIMENTAL") || truthy("OPENCODE_ENABLE_EXA") || truthy("OPENCODE_EXPERIMENTAL_EXA"),
     enableParallel: truthy("OPENCODE_ENABLE_PARALLEL") || truthy("OPENCODE_EXPERIMENTAL_PARALLEL"),
@@ -87,13 +89,16 @@ export const configNode = makeLocationNode({ service: ConfigService, layer: defa
 
 export function selectProvider(
   sessionID: string,
-  flags: Pick<Config, "enableExa" | "enableParallel"> = { enableExa: false, enableParallel: false },
+  flags: Pick<Config, "enableExa" | "enableParallel" | "exaApiKey" | "parallelApiKey"> = {
+    enableExa: false,
+    enableParallel: false,
+  },
   override?: Provider,
 ): Provider {
   if (override) return override
-  if (flags.enableParallel) return "parallel"
-  if (flags.enableExa) return "exa"
-  return Number.parseInt(checksum(sessionID) ?? "0", 36) % 2 === 0 ? "exa" : "parallel"
+  if (flags.enableParallel || flags.parallelApiKey) return "parallel"
+  if (flags.enableExa || flags.exaApiKey) return "exa"
+  return "duckduckgo"
 }
 
 const McpResult = Schema.Struct({
@@ -184,6 +189,45 @@ const callMcp = <F extends Schema.Struct.Fields>(
     )
   })
 
+const callDuckDuckGo = (http: HttpClient.HttpClient, query: string): Effect.Effect<string | undefined, Error> =>
+  Effect.gen(function* () {
+    const url = new URL("https://api.duckduckgo.com/")
+    url.searchParams.set("q", query)
+    url.searchParams.set("format", "json")
+    url.searchParams.set("no_html", "1")
+    url.searchParams.set("skip_disambig", "1")
+
+    const request = HttpClientRequest.get(url.toString()).pipe(
+      HttpClientRequest.accept("application/json"),
+      HttpClientRequest.setHeader("User-Agent", `opencode/${InstallationVersion}`),
+    )
+
+    return yield* Effect.gen(function* () {
+      const response = yield* HttpClient.filterStatusOk(http).execute(request)
+      const body = yield* collectBoundedResponseBody(
+        response,
+        MAX_RESPONSE_BYTES,
+        () => new Error(`DuckDuckGo response exceeded ${MAX_RESPONSE_BYTES} bytes`),
+      )
+      const json = JSON.parse(body.toString("utf8"))
+      const parts: string[] = []
+      if (json.Heading) parts.push(`# ${json.Heading}`)
+      if (json.AbstractText) parts.push(json.AbstractText)
+      if (Array.isArray(json.RelatedTopics)) {
+        for (const topic of json.RelatedTopics.slice(0, 5)) {
+          if (topic.Text) parts.push(`- ${topic.Text}`)
+        }
+      }
+      return parts.length > 0 ? parts.join("\n\n") : undefined
+    }).pipe(
+      Effect.mapError((e) => (e instanceof Error ? e : new Error(String(e)))),
+      Effect.timeoutOrElse({
+        duration: Duration.seconds(15),
+        orElse: () => Effect.fail(new Error("DuckDuckGo request timed out")),
+      }),
+    )
+  })
+
 const Output = Schema.Struct({
   provider: Provider,
   text: Schema.String,
@@ -217,30 +261,32 @@ const layer = Layer.effectDiscard(
               })
 
               const text =
-                provider === "exa"
-                  ? yield* callMcp(http, exaUrl(config.exaApiKey), "web_search_exa", ExaArgs, {
-                      query: input.query,
-                      type: input.type || "auto",
-                      numResults: input.numResults || 8,
-                      livecrawl: input.livecrawl || "fallback",
-                      contextMaxCharacters: input.contextMaxCharacters,
-                    })
-                  : yield* callMcp(
-                      http,
-                      PARALLEL_URL,
-                      "web_search",
-                      ParallelArgs,
-                      {
-                        objective: input.query,
-                        search_queries: [input.query],
-                        session_id: context.sessionID,
-                        // V2 invocation context does not safely expose the model yet.
-                      },
-                      {
-                        "User-Agent": `opencode/${InstallationVersion}`,
-                        ...(config.parallelApiKey ? { Authorization: `Bearer ${config.parallelApiKey}` } : {}),
-                      },
-                    )
+                provider === "duckduckgo"
+                  ? yield* callDuckDuckGo(http, input.query)
+                  : provider === "exa"
+                    ? yield* callMcp(http, exaUrl(config.exaApiKey), "web_search_exa", ExaArgs, {
+                        query: input.query,
+                        type: input.type || "auto",
+                        numResults: input.numResults || 8,
+                        livecrawl: input.livecrawl || "fallback",
+                        contextMaxCharacters: input.contextMaxCharacters,
+                      })
+                    : yield* callMcp(
+                        http,
+                        PARALLEL_URL,
+                        "web_search",
+                        ParallelArgs,
+                        {
+                          objective: input.query,
+                          search_queries: [input.query],
+                          session_id: context.sessionID,
+                          // V2 invocation context does not safely expose the model yet.
+                        },
+                        {
+                          "User-Agent": `opencode/${InstallationVersion}`,
+                          ...(config.parallelApiKey ? { Authorization: `Bearer ${config.parallelApiKey}` } : {}),
+                        },
+                      )
               return {
                 provider,
                 text: text ?? NO_RESULTS,
