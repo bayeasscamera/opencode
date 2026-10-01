@@ -11,6 +11,7 @@ import { LocationMutation } from "../location-mutation"
 import { AppProcess } from "../process"
 import { PermissionV2 } from "../permission"
 import { PositiveInt } from "../schema"
+import { SelfHealing } from "../session/runner/self-healing"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -184,6 +185,10 @@ const layer = Layer.effectDiscard(
               }
 
               const output = result.output?.toString("utf8") || "(no output)"
+              const failure = SelfHealing.detectFailure(output, result.exitCode)
+              if (failure) {
+                yield* Effect.logWarning(`Command failure detected for auto-correction analysis: ${input.command}`)
+              }
               const notice = result.outputTruncated
                 ? "[output capture truncated at the in-memory safety limit]"
                 : undefined
