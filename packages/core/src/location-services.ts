@@ -36,6 +36,8 @@ import { BuiltInTools } from "./tool/builtins"
 import { ReadToolFileSystem } from "./tool/read-filesystem"
 import { ToolRegistry } from "./tool/registry"
 import { ToolOutputStore } from "./tool-output-store"
+import { MemoryContext } from "./memory/memory-context"
+import { Memory } from "./memory/memory"
 
 export { LocationServiceMap } from "./location-service-map"
 
@@ -76,6 +78,8 @@ export const locationServices = LayerNode.group([
   SessionRunnerModel.node,
   Snapshot.node,
   SessionRunnerLLM.node,
+  Memory.node,
+  MemoryContext.node,
 ])
 
 export type LocationServices = LayerNode.Output<typeof locationServices>
