@@ -8,11 +8,11 @@ import { PermissionV2 } from "../permission"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
-import { exec } from "child_process"
+import { execFile } from "child_process"
 import { promisify } from "util"
 import fs from "fs"
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 export const name = "read_pdf"
 
@@ -83,12 +83,11 @@ const layer = Layer.effectDiscard(
                 }
               }
 
-              const maxPagesArg = maxPages > 0 ? `-l ${maxPages}` : ""
-
               // Try pdftotext (poppler-utils)
               try {
-                const { stdout } = await execAsync(
-                  `pdftotext ${maxPagesArg} -layout "${filePath}" -`,
+                const { stdout } = await execFileAsync(
+                  "pdftotext",
+                  [...(maxPages > 0 ? ["-l", String(maxPages)] : []), "-layout", filePath, "-"],
                   { maxBuffer: 10 * 1024 * 1024 },
                 )
                 const content = stdout.trim()
@@ -116,8 +115,9 @@ except ImportError:
     text = extract_text(sys.argv[1])
     print(json.dumps({"text": text, "page_count": -1}))
 `
-                const { stdout } = await execAsync(
-                  `python3 -c '${pyScript.replace(/'/g, "'")}' "${filePath}"`,
+                const { stdout } = await execFileAsync(
+                  "python3",
+                  ["-c", pyScript, filePath],
                   { maxBuffer: 10 * 1024 * 1024 },
                 )
                 const result = JSON.parse(stdout.trim()) as { text: string; page_count: number }

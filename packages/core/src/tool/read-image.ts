@@ -8,12 +8,12 @@ import { PermissionV2 } from "../permission"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
-import { exec } from "child_process"
+import { execFile } from "child_process"
 import { promisify } from "util"
 import fs from "fs"
 import path from "path"
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 export const name = "read_image"
 
@@ -88,12 +88,12 @@ const layer = Layer.effectDiscard(
               if (mode === "metadata") {
                 // Try file command for basic info
                 try {
-                  const { stdout } = await execAsync(`file "${filePath}"`)
+                  const { stdout } = await execFileAsync("file", [filePath])
                   const info = stdout.trim()
 
                   // Try identify (ImageMagick) for dimensions
                   try {
-                    const { stdout: dims } = await execAsync(`identify -format "%wx%h %m" "${filePath}"`)
+                    const { stdout: dims } = await execFileAsync("identify", ["-format", "%wx%h %m", filePath])
                     const parts = dims.trim().split(" ")
                     const [wStr, hStr] = (parts[0] || "").split("x")
                     const w = parseInt(wStr || "0", 10)
@@ -124,7 +124,11 @@ const layer = Layer.effectDiscard(
               if (mode === "ocr") {
                 try {
                   const tmpOut = `/tmp/opencode-ocr-${Date.now()}`
-                  await execAsync(`tesseract "${filePath}" "${tmpOut}" -l fra+eng 2>/dev/null || tesseract "${filePath}" "${tmpOut}" 2>/dev/null`)
+                  // Two launches instead of one `||` chain: the path is an argument, never a word the
+                  // shell could split or expand.
+                  await execFileAsync("tesseract", [filePath, tmpOut, "-l", "fra+eng"]).catch(() =>
+                    execFileAsync("tesseract", [filePath, tmpOut]),
+                  )
                   const ocrText = fs.existsSync(`${tmpOut}.txt`) ? fs.readFileSync(`${tmpOut}.txt`, "utf-8").trim() : ""
                   try { fs.unlinkSync(`${tmpOut}.txt`) } catch { /* ignore */ }
                   if (!ocrText) return { text: "OCR: aucun texte détecté dans l'image (ou tesseract non disponible)." }
@@ -144,8 +148,18 @@ const layer = Layer.effectDiscard(
                     images: [b64],
                     stream: false,
                   })
-                  const { stdout } = await execAsync(
-                    `curl -s -X POST http://localhost:11434/api/generate -H 'Content-Type: application/json' -d '${body.replace(/'/g, "'\\''")}'`,
+                  const { stdout } = await execFileAsync(
+                    "curl",
+                    [
+                      "-s",
+                      "-X",
+                      "POST",
+                      "http://localhost:11434/api/generate",
+                      "-H",
+                      "Content-Type: application/json",
+                      "-d",
+                      body,
+                    ],
                     { maxBuffer: 5 * 1024 * 1024 },
                   )
                   const resp = JSON.parse(stdout) as { response?: string }

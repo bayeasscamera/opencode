@@ -296,10 +296,17 @@ export const make = Effect.gen(function* () {
   ) => {
     if (globalThis.process.platform === "win32") {
       return Effect.callback<void, PlatformError.PlatformError>((resume) => {
-        NodeChildProcess.exec(`taskkill /pid ${proc.pid} /T /F`, { windowsHide: true }, (err) => {
-          if (err) return resume(Effect.fail(toPlatformError("kill", toError(err), command)))
-          resume(Effect.void)
-        })
+        // `execFile` with an argument array rather than `exec` with a built string, so the pid can
+        // never be read as anything but an argument.
+        NodeChildProcess.execFile(
+          "taskkill",
+          ["/pid", String(proc.pid), "/T", "/F"],
+          { windowsHide: true },
+          (err) => {
+            if (err) return resume(Effect.fail(toPlatformError("kill", toError(err), command)))
+            resume(Effect.void)
+          },
+        )
       })
     }
 
