@@ -12,6 +12,7 @@ import { SessionV2 } from "@opencode-ai/core/session"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { Database } from "../src/database/database"
 import { EventV2 } from "../src/event"
+import { YouShouldKnow } from "../src/observer"
 import { ApplicationTools } from "../src/tool/application-tools"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
@@ -40,16 +41,32 @@ const permission = Layer.succeed(
   }),
 )
 
-// The real built-in graph, with only the permission service replaced. Every tool below is reached
-// through the same registry a Session uses, so the assertion runs where it would in production.
+// The real observer writes to `Path.state/observer/<projectID>.json` and `reset` deletes that file,
+// so the test drives a fake instead of the user's real dismissal cache.
+const observerCalls: string[] = []
+const observer = Layer.succeed(
+  YouShouldKnow.Service,
+  YouShouldKnow.Service.of({
+    inspect: () => Effect.succeed([]),
+    inspectFile: () => [],
+    dismiss: (id: string) => Effect.sync(() => void observerCalls.push(`dismiss:${id}`)),
+    resetDismissed: () => Effect.sync(() => void observerCalls.push("reset")),
+  }),
+)
+
+// The real built-in graph, with only the permission service and the observer replaced. Every tool
+// below is reached through the same registry a Session uses, so the assertion runs where it would in
+// production.
 const it = testEffect(
   AppNodeBuilder.build(LayerNode.group([ApplicationTools.node, Database.node, EventV2.node, LocationServiceMap.node]), [
     [PermissionV2.node, permission],
+    [YouShouldKnow.node, observer],
   ]),
 )
 
 const reset = () => {
   assertions.length = 0
+  observerCalls.length = 0
   denyAction = undefined
 }
 
@@ -226,6 +243,51 @@ describe("built-in tool permission guards", () => {
             const allowed = yield* settleTool(registry, call("mod", { action: "list" }))
             expect(textOf(allowed)).toContain("Mods & Garde-fous")
             expect(assertions).toMatchObject([{ action: "mod", resources: ["list"] }])
+          }),
+        ),
+      ),
+    ),
+  )
+
+  it.live("guards observer dismiss and reset, and leaves the two reads alone", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((dir) =>
+        inLocation(
+          dir.path,
+          Effect.gen(function* () {
+            const registry = yield* ToolRegistry.Service
+
+            reset()
+            denyAction = "observer"
+            const denied = yield* settleTool(
+              registry,
+              call("observer", { action: "dismiss", observation_id: "obs_1" }),
+            )
+            expect(textOf(denied)).toContain("Permission denied: observer")
+            expect(observerCalls).toEqual([])
+
+            reset()
+            const dismissed = yield* settleTool(
+              registry,
+              call("observer", { action: "dismiss", observation_id: "obs_1" }),
+            )
+            expect(textOf(dismissed)).toContain("ignorée")
+            expect(assertions).toMatchObject([{ action: "observer", resources: ["dismiss"] }])
+            expect(observerCalls).toEqual(["dismiss:obs_1"])
+
+            reset()
+            yield* settleTool(registry, call("observer", { action: "reset" }))
+            expect(assertions).toMatchObject([{ action: "observer", resources: ["reset"] }])
+            expect(observerCalls).toEqual(["reset"])
+
+            // The two read-only actions never ask.
+            reset()
+            yield* settleTool(registry, call("observer", { action: "inspect" }))
+            yield* settleTool(registry, call("observer", { action: "check_file", path: "src/index.ts" }))
+            expect(assertions).toEqual([])
           }),
         ),
       ),

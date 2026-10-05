@@ -1,9 +1,11 @@
 export * as ObserverTool from "./observer"
 
+import { ToolFailure } from "@opencode-ai/llm"
 import { Effect, Layer, Schema } from "effect"
 import { makeLocationNode } from "../effect/app-node"
 import { Location } from "../location"
 import { YouShouldKnow } from "../observer"
+import { PermissionV2 } from "../permission"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -32,6 +34,25 @@ const layer = Layer.effectDiscard(
     const tools = yield* Tools.Service
     const observer = yield* YouShouldKnow.Service
     const location = yield* Location.Service
+    const permission = yield* PermissionV2.Service
+
+    /**
+     * `inspect` and `check_file` only read the workspace, so they stay unguarded. `dismiss` and
+     * `reset` change the persisted dismissal cache — `reset` deletes it outright — so they ask
+     * first. The action is the resource, so a caller can allow dismissing one observation without
+     * also allowing a blanket reset.
+     */
+    const guardMutation = (action: "dismiss" | "reset", context: Tool.Context) =>
+      permission
+        .assert({
+          action: name,
+          resources: [action],
+          save: [action],
+          sessionID: context.sessionID,
+          agent: context.agent,
+          source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+        })
+        .pipe(Effect.mapError(() => new ToolFailure({ message: `Permission denied: ${name}` })))
 
     yield* tools.register({
       [name]: Tool.make({
@@ -40,7 +61,7 @@ const layer = Layer.effectDiscard(
         input: Input,
         output: Output,
         toModelOutput: ({ output }) => [{ type: "text", text: output.text }],
-        execute: (input) =>
+        execute: (input, context) =>
           Effect.gen(function* () {
             const action = input.action ?? "inspect"
 
@@ -79,6 +100,7 @@ const layer = Layer.effectDiscard(
                   count: 0,
                 }
               }
+              yield* guardMutation(action, context)
               yield* observer.dismiss(input.observation_id)
               return {
                 text: `✅ Observation [${input.observation_id}] ignorée et enregistrée en cache persistant.`,
@@ -87,6 +109,7 @@ const layer = Layer.effectDiscard(
             }
 
             if (action === "reset") {
+              yield* guardMutation(action, context)
               yield* observer.resetDismissed()
               return {
                 text: "✅ Historique des observations ignorées réinitialisé. Toutes les alertes sont réactivées.",
@@ -126,5 +149,5 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/observer",
   layer,
-  deps: [ToolRegistry.node, YouShouldKnow.node, Location.node],
+  deps: [ToolRegistry.node, YouShouldKnow.node, Location.node, PermissionV2.node],
 })
