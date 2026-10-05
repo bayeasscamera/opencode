@@ -16,6 +16,7 @@ import eventSourcedSessionInputMigration from "@opencode-ai/core/database/migrat
 import contextEpochAgentMigration from "@opencode-ai/core/database/migration/20260605042240_add_context_epoch_agent"
 import simplifyIntegrationCredentialsMigration from "@opencode-ai/core/database/migration/20260611192811_lush_chimera"
 import simplifySessionInputMigration from "@opencode-ai/core/database/migration/20260622202450_simplify_session_input"
+import memoryScheduleTablesMigration from "@opencode-ai/core/database/migration/20261001000000_memory_schedule_tables"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -680,6 +681,73 @@ describe("DatabaseMigration", () => {
           { id: "20260511173437_session-metadata" },
           { id: "20260530232709_lovely_romulus" },
         ])
+      }),
+    )
+  })
+
+  test("upgrades a database that already ran the hand-written memory and schedule migrations", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        // An install that ran the two hand-written migrations keeps their ids
+        // recorded, so the canonical replacement is not in `completed` and runs.
+        yield* db.run(sql`CREATE TABLE migration (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`)
+        yield* db.run(sql`INSERT INTO migration (id, time_completed) VALUES ('20261001000000_memory_table', 1)`)
+        yield* db.run(sql`INSERT INTO migration (id, time_completed) VALUES ('20261001000001_schedule_table', 1)`)
+        // Those migrations already created both tables, without the foreign keys
+        // and with `enabled` defaulting to 1 instead of true.
+        yield* db.run(sql`
+          CREATE TABLE memory (
+            id text PRIMARY KEY,
+            project_id text NOT NULL,
+            kind text NOT NULL,
+            content text NOT NULL,
+            source_session_id text,
+            time_created integer NOT NULL,
+            time_updated integer NOT NULL
+          )
+        `)
+        yield* db.run(sql`
+          CREATE TABLE schedule (
+            id text PRIMARY KEY,
+            project_id text NOT NULL,
+            name text NOT NULL,
+            cron text NOT NULL,
+            prompt text NOT NULL,
+            enabled integer DEFAULT 1 NOT NULL,
+            last_run_at integer,
+            next_run_at integer,
+            time_created integer NOT NULL,
+            time_updated integer NOT NULL
+          )
+        `)
+        yield* db.run(
+          sql`INSERT INTO memory (id, project_id, kind, content, time_created, time_updated) VALUES ('mem_old', 'proj_old', 'note', 'kept', 1, 1)`,
+        )
+        yield* db.run(
+          sql`INSERT INTO schedule (id, project_id, name, cron, prompt, time_created, time_updated) VALUES ('sch_old', 'proj_old', 'nightly', '0 0 * * *', 'run', 1, 1)`,
+        )
+
+        yield* DatabaseMigration.applyOnly(db, [memoryScheduleTablesMigration])
+
+        // The upgrade must not throw "table memory already exists", and it must
+        // leave the pre-existing rows in place.
+        expect(yield* db.get(sql`SELECT content FROM memory WHERE id = 'mem_old'`)).toEqual({ content: "kept" })
+        expect(yield* db.get(sql`SELECT name, enabled FROM schedule WHERE id = 'sch_old'`)).toEqual({
+          name: "nightly",
+          enabled: 1,
+        })
+        expect(yield* db.all(sql`SELECT id FROM migration ORDER BY id`)).toEqual([
+          { id: "20261001000000_memory_schedule_tables" },
+          { id: "20261001000000_memory_table" },
+          { id: "20261001000001_schedule_table" },
+        ])
+        // The indexes declared by the canonical migration are still created.
+        expect(
+          yield* db.all(
+            sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('memory_project_kind_idx', 'schedule_project_idx') ORDER BY name`,
+          ),
+        ).toEqual([{ name: "memory_project_kind_idx" }, { name: "schedule_project_idx" }])
       }),
     )
   })
