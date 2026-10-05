@@ -21,6 +21,7 @@ import { settleTool, toolIdentity } from "./lib/tool"
 const sessionID = SessionV2.ID.make("ses_tool_guard_test")
 const assertions: PermissionV2.AssertInput[] = []
 let denyAction: string | undefined
+let denyResource: string | undefined
 
 const permission = Layer.succeed(
   PermissionV2.Service,
@@ -28,7 +29,8 @@ const permission = Layer.succeed(
     assert: (input) =>
       Effect.sync(() => assertions.push(input)).pipe(
         Effect.andThen(
-          denyAction !== undefined && input.action === denyAction
+          (denyAction !== undefined && input.action === denyAction) ||
+            (denyResource !== undefined && input.resources.includes(denyResource))
             ? Effect.fail(new PermissionV2.BlockedError({ rules: [] }))
             : Effect.void,
         ),
@@ -68,6 +70,7 @@ const reset = () => {
   assertions.length = 0
   observerCalls.length = 0
   denyAction = undefined
+  denyResource = undefined
 }
 
 const call = (name: string, input: unknown) => ({
@@ -170,7 +173,7 @@ describe("built-in tool permission guards", () => {
     ),
   )
 
-  it.live("guards mcp_store", () =>
+  it.live("guards mcp_store per action, so list can be allowed without allowing info", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
       (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
@@ -186,10 +189,26 @@ describe("built-in tool permission guards", () => {
             const denied = yield* settleTool(registry, call("mcp_store", { action: "list" }))
             expect(textOf(denied)).toContain("Permission denied: mcp_store")
 
+            // A rule naming only `info` leaves `list` alone. `mcp_store` exposes exactly two actions,
+            // `list` and `info` — there is no `install`, the tool only recommends a configuration.
             reset()
-            const allowed = yield* settleTool(registry, call("mcp_store", { action: "list" }))
-            expect(textOf(allowed)).toContain("Catalogue MCP Store")
-            expect(assertions).toMatchObject([{ action: "mcp_store", resources: ["*"] }])
+            denyResource = "info"
+            const listed = yield* settleTool(registry, call("mcp_store", { action: "list" }))
+            expect(textOf(listed)).toContain("Catalogue MCP Store")
+            expect(assertions).toMatchObject([{ action: "mcp_store", resources: ["list"] }])
+
+            const infoDenied = yield* settleTool(registry, call("mcp_store", { action: "info", id: "brave-search" }))
+            expect(textOf(infoDenied)).toContain("Permission denied: mcp_store")
+            expect(assertions).toMatchObject([
+              { action: "mcp_store", resources: ["list"] },
+              { action: "mcp_store", resources: ["info"] },
+            ])
+
+            // With no rule against it, the same call goes through and reports the action it asked for.
+            reset()
+            const info = yield* settleTool(registry, call("mcp_store", { action: "info", id: "brave-search" }))
+            expect(textOf(info)).toContain("Connecteur MCP")
+            expect(assertions).toMatchObject([{ action: "mcp_store", resources: ["info"] }])
           }),
         ),
       ),

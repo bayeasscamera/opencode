@@ -55,13 +55,13 @@ const layer = Layer.effectDiscard(
           toModelOutput: ({ output }) => [{ type: "text", text: output.text }],
           execute: (input, context) =>
             Effect.gen(function* () {
-              // Browsing the catalogue is harmless on its own, but the tool's output is a ready-made
-              // MCP configuration that a caller can paste into opencode.json. Approving the read
-              // keeps that recommendation flow visible to the user.
+              // Browsing the catalogue is harmless on its own, but the `info` output is a ready-made
+              // MCP configuration that a caller can paste into opencode.json. The action is the
+              // resource, so a caller can allow listing without also allowing that recommendation.
               yield* permission.assert({
                 action: name,
-                resources: ["*"],
-                save: ["*"],
+                resources: [input.action],
+                save: [input.action],
                 sessionID: context.sessionID,
                 agent: context.agent,
                 source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
