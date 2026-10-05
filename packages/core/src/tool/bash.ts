@@ -13,6 +13,8 @@ import { PermissionV2 } from "../permission"
 import { PositiveInt } from "../schema"
 import { SelfHealing } from "../session/runner/self-healing"
 import { PathGuard } from "../sandbox/path-guard"
+import { BashReadOnly } from "../sandbox/bash-readonly"
+import { ModRegistry } from "../mod/registry"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -104,6 +106,7 @@ const layer = Layer.effectDiscard(
     const appProcess = yield* AppProcess.Service
     const config = yield* Config.Service
     const permission = yield* PermissionV2.Service
+    const mods = yield* ModRegistry.Service
 
     yield* tools
       .register({
@@ -141,18 +144,22 @@ const layer = Layer.effectDiscard(
                 (directory) =>
                   `Command argument references external directory ${path.join(directory, "*").replaceAll("\\", "/")}. Bash runs with host-user filesystem, process, and network authority; this scan is advisory only.`,
               )
-              yield* permission.assert({
-                action: name,
-                resources: [input.command],
-                save: [input.command],
-                sessionID: context.sessionID,
-                agent: context.agent,
-                source,
-              })
 
-              const validation = PathGuard.validateCommand(input.command)
+              // Read-only bypass: skip interactive permission prompt for safe consultation commands
+              if (!BashReadOnly.isReadOnly(input.command)) {
+                yield* permission.assert({
+                  action: name,
+                  resources: [input.command],
+                  save: [input.command],
+                  sessionID: context.sessionID,
+                  agent: context.agent,
+                  source,
+                })
+              }
+
+              const validation = mods.runBeforeCommand(input.command, target.canonical)
               if (!validation.allowed) {
-                return yield* Effect.fail(new Error(validation.reason ?? "Command blocked by sandbox path-guard"))
+                return yield* Effect.fail(new Error(validation.reason ?? "Command blocked by security mod"))
               }
 
               if ((yield* fs.stat(target.canonical)).type !== "Directory")
@@ -195,6 +202,8 @@ const layer = Layer.effectDiscard(
               if (failure) {
                 yield* Effect.logWarning(`Command failure detected for auto-correction analysis: ${input.command}`)
               }
+              const modInspection = mods.runAfterCommand(input.command, output)
+              const allWarnings = [...warnings, ...modInspection.warnings]
               const notice = result.outputTruncated
                 ? "[output capture truncated at the in-memory safety limit]"
                 : undefined
@@ -202,7 +211,7 @@ const layer = Layer.effectDiscard(
                 exit: result.exitCode,
                 output: notice ? `${output}\n\n${notice}` : output,
                 truncated: result.outputTruncated === true,
-                ...(warnings.length ? { warnings } : {}),
+                ...(allWarnings.length ? { warnings: allWarnings } : {}),
               }
             }).pipe(Effect.mapError(() => new ToolFailure({ message: `Unable to execute command: ${input.command}` }))),
         }),
@@ -214,5 +223,13 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/bash",
   layer,
-  deps: [ToolRegistry.node, LocationMutation.node, FSUtil.node, AppProcess.node, Config.node, PermissionV2.node],
+  deps: [
+    ToolRegistry.node,
+    LocationMutation.node,
+    FSUtil.node,
+    AppProcess.node,
+    Config.node,
+    PermissionV2.node,
+    ModRegistry.node,
+  ],
 })

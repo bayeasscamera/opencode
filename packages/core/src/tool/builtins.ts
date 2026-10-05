@@ -18,6 +18,12 @@ import { MemoryTool } from "./memory"
 import { McpStoreTool } from "./mcp-store"
 import { ScheduleTool } from "./schedule"
 import { ComputerTool } from "./computer"
+import { SubagentTool } from "./subagent"
+import { ModTool } from "./mod"
+import { ObserverTool } from "./observer"
+import { ReadPdfTool } from "./read-pdf"
+import { ReadImageTool } from "./read-image"
+import { BrowserTool } from "./browser"
 
 /**
  * Composes only the shipped Location-scoped built-in tool transforms.
@@ -52,5 +58,12 @@ export const node = makeLocationNode({
     McpStoreTool.node,
     ScheduleTool.node,
     ComputerTool.node,
+    SubagentTool.node,
+    ModTool.node,
+    ObserverTool.node,
+    ReadPdfTool.node,
+    ReadImageTool.node,
+    BrowserTool.node,
   ],
 })
+
