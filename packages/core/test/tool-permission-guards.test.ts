@@ -1,5 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
+import fs from "fs"
 import { sql } from "drizzle-orm"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -57,19 +58,17 @@ const observer = Layer.succeed(
   }),
 )
 
-// The real controller shells out to `screencapture` and `osascript`, which would act on the machine
-// this test runs on. Replacing it means the `computer` tool has no route to the real desktop at all,
-// so the test never needs a flag to keep itself safe.
-const desktopCalls: string[] = []
-const desktop = Layer.succeed(
-  ComputerUse.Service,
-  ComputerUse.Service.of({
-    screenshot: (dest: string) => Effect.sync(() => void desktopCalls.push(`screenshot:${dest}`)),
-    keystroke: (text: string) => Effect.sync(() => void desktopCalls.push(`keystroke:${text}`)),
-    keyCombo: (key: string, modifiers: ReadonlyArray<string>) =>
-      Effect.sync(() => void desktopCalls.push(`keyCombo:${key}:${modifiers.join("+")}`)),
-  }),
-)
+// The real controller builds the commands and checks `process.platform`, so the test keeps all of
+// that and replaces only the process launch. The `computer` tool therefore has no route to the real
+// desktop, and the assertions below are the actual argv that would have been passed.
+const desktopCalls: ComputerUse.Command[] = []
+const desktop = ComputerUse.layerWith({
+  platform: "darwin",
+  run: async (file, args) => {
+    desktopCalls.push({ file, args: [...args] })
+    if (file === "screencapture" || file === "scrot") fs.writeFileSync(args[args.length - 1]!, "")
+  },
+})
 
 // The real built-in graph, with only the permission service, the observer and the desktop replaced.
 // Every tool below is reached through the same registry a Session uses, so the assertion runs where
@@ -151,19 +150,81 @@ describe("built-in tool permission guards", () => {
             const observed = yield* settleTool(registry, call("computer", { action: "screenshot" }))
             expect(textOf(observed)).toContain("Capture d'écran effectuée avec succès")
             expect(assertions).toMatchObject([{ action: "computer", resources: ["screenshot"] }])
-            // Only the injected controller was asked, and with a `.png` destination.
+            // One launch, and the destination is a separate argument rather than part of a command.
             expect(desktopCalls).toHaveLength(1)
-            expect(desktopCalls[0]).toMatch(/^screenshot:.*\.png$/)
+            expect(desktopCalls[0]!.file).toBe("screencapture")
+            expect(desktopCalls[0]!.args[0]).toBe("-x")
+            expect(desktopCalls[0]!.args[1]).toMatch(/\.png$/)
 
             reset()
             yield* settleTool(registry, call("computer", { action: "type", text: "bonjour" }))
-            expect(desktopCalls).toEqual(["keystroke:bonjour"])
+            expect(desktopCalls).toEqual([
+              { file: "osascript", args: ["-e", 'tell application "System Events" to keystroke "bonjour"'] },
+            ])
             expect(assertions).toMatchObject([{ action: "computer", resources: ["type"] }])
 
             reset()
             yield* settleTool(registry, call("computer", { action: "key_combo", key: "return", modifiers: ["command"] }))
-            expect(desktopCalls).toEqual(["keyCombo:return:command"])
+            expect(desktopCalls).toEqual([
+              {
+                file: "osascript",
+                args: ["-e", 'tell application "System Events" to key code 36 using {command down}'],
+              },
+            ])
             expect(assertions).toMatchObject([{ action: "computer", resources: ["key_combo"] }])
+          }),
+        ),
+      ),
+    ),
+  )
+
+  it.live("confines a caller-supplied targetPath to the Location", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => Promise.all([tmpdir(), tmpdir()])),
+      ([inside, outside]) =>
+        Effect.promise(() =>
+          Promise.all([inside[Symbol.asyncDispose](), outside[Symbol.asyncDispose]()]).then(() => undefined),
+        ),
+    ).pipe(
+      Effect.flatMap(([inside, outside]) =>
+        inLocation(
+          inside.path,
+          Effect.gen(function* () {
+            const registry = yield* ToolRegistry.Service
+
+            // A relative target stays inside the Location, so it needs no external approval.
+            reset()
+            yield* settleTool(registry, call("computer", { action: "screenshot", targetPath: "shot.png" }))
+            expect(assertions).toMatchObject([{ action: "computer", resources: ["screenshot"] }])
+            expect(desktopCalls[0]!.args).toEqual(["-x", `${inside.path}/shot.png`])
+
+            // An absolute target outside the Location needs `external_directory`, like `read`.
+            reset()
+            denyAction = "external_directory"
+            const denied = yield* settleTool(
+              registry,
+              call("computer", { action: "screenshot", targetPath: `${outside.path}/shot.png` }),
+            )
+            expect(textOf(denied)).toContain("Permission denied: computer (")
+            expect(desktopCalls).toEqual([])
+
+            reset()
+            yield* settleTool(
+              registry,
+              call("computer", { action: "screenshot", targetPath: `${outside.path}/shot.png` }),
+            )
+            expect(assertions.map((item) => item.action)).toEqual(["computer", "external_directory"])
+            expect(desktopCalls[0]!.args).toEqual(["-x", `${outside.path}/shot.png`])
+
+            // A relative path that escapes the Location is rejected outright, with no prompt.
+            reset()
+            const escaped = yield* settleTool(
+              registry,
+              call("computer", { action: "screenshot", targetPath: "../escape.png" }),
+            )
+            expect(textOf(escaped)).toContain("Invalid targetPath")
+            expect(desktopCalls).toEqual([])
+            expect(assertions).toMatchObject([{ action: "computer", resources: ["screenshot"] }])
           }),
         ),
       ),
