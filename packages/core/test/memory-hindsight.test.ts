@@ -7,7 +7,6 @@ import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Memory } from "@opencode-ai/core/memory/memory"
-import { sql } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Database.node, Memory.node])))
@@ -15,19 +14,6 @@ const projectID = Project.ID.make("proj_hindsight_test")
 
 const setup = Effect.gen(function* () {
   const { db } = yield* Database.Service
-  yield* db
-    .run(
-      sql`CREATE TABLE IF NOT EXISTS memory (
-        id text PRIMARY KEY NOT NULL,
-        project_id text NOT NULL,
-        kind text NOT NULL,
-        content text NOT NULL,
-        source_session_id text,
-        time_created integer NOT NULL,
-        time_updated integer NOT NULL
-      )`,
-    )
-    .pipe(Effect.orDie)
   yield* db
     .insert(ProjectTable)
     .values({ id: projectID, worktree: AbsolutePath.make("/project_hindsight"), sandboxes: [] })

@@ -87,6 +87,18 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`memory\` (
+          \`id\` text PRIMARY KEY,
+          \`project_id\` text NOT NULL,
+          \`kind\` text NOT NULL,
+          \`content\` text NOT NULL,
+          \`source_session_id\` text,
+          \`time_created\` integer NOT NULL,
+          \`time_updated\` integer NOT NULL,
+          CONSTRAINT \`fk_memory_project_id_project_id_fk\` FOREIGN KEY (\`project_id\`) REFERENCES \`project\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`permission\` (
           \`id\` text PRIMARY KEY,
           \`project_id\` text NOT NULL,
@@ -122,6 +134,21 @@ export default {
           \`time_initialized\` integer,
           \`sandboxes\` text NOT NULL,
           \`commands\` text
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`schedule\` (
+          \`id\` text PRIMARY KEY,
+          \`project_id\` text NOT NULL,
+          \`name\` text NOT NULL,
+          \`cron\` text NOT NULL,
+          \`prompt\` text NOT NULL,
+          \`enabled\` integer DEFAULT true NOT NULL,
+          \`last_run_at\` integer,
+          \`next_run_at\` integer,
+          \`time_created\` integer NOT NULL,
+          \`time_updated\` integer NOT NULL,
+          CONSTRAINT \`fk_schedule_project_id_project_id_fk\` FOREIGN KEY (\`project_id\`) REFERENCES \`project\`(\`id\`) ON DELETE CASCADE
         );
       `)
       yield* tx.run(`
@@ -238,9 +265,11 @@ export default {
       `)
       yield* tx.run(`CREATE UNIQUE INDEX \`event_aggregate_seq_idx\` ON \`event\` (\`aggregate_id\`,\`seq\`);`)
       yield* tx.run(`CREATE INDEX \`event_aggregate_type_seq_idx\` ON \`event\` (\`aggregate_id\`,\`type\`,\`seq\`);`)
+      yield* tx.run(`CREATE INDEX \`memory_project_kind_idx\` ON \`memory\` (\`project_id\`,\`kind\`);`)
       yield* tx.run(
         `CREATE UNIQUE INDEX \`permission_project_action_resource_idx\` ON \`permission\` (\`project_id\`,\`action\`,\`resource\`);`,
       )
+      yield* tx.run(`CREATE INDEX \`schedule_project_idx\` ON \`schedule\` (\`project_id\`);`)
       yield* tx.run(
         `CREATE INDEX \`message_session_time_created_id_idx\` ON \`message\` (\`session_id\`,\`time_created\`,\`id\`);`,
       )

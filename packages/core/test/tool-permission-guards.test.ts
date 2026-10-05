@@ -6,6 +6,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { LocationServiceMap } from "@opencode-ai/core/location-services"
 import { Location } from "@opencode-ai/core/location"
 import { PermissionV2 } from "@opencode-ai/core/permission"
+import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
@@ -68,28 +69,29 @@ const inLocation = <A, E, R>(directory: string, body: Effect.Effect<A, E, R>) =>
   )
 
 /**
- * The generated schema does not carry the `memory` table yet, and a fresh database records every
- * migration as complete without running it, so the table has to exist before `memory_record` can
- * write. Same workaround as `memory-hindsight.test.ts`.
+ * Every table the generated schema declares, read straight from SQLite. The harness database is a
+ * fresh `:memory:` instance with migrations applied, so this is what a clean install gets.
  */
-const createMemoryTable = Effect.gen(function* () {
+const tableNames = Effect.gen(function* () {
   const { db } = yield* Database.Service
-  yield* db
-    .run(
-      sql`CREATE TABLE IF NOT EXISTS memory (
-        id text PRIMARY KEY NOT NULL,
-        project_id text NOT NULL,
-        kind text NOT NULL,
-        content text NOT NULL,
-        source_session_id text,
-        time_created integer NOT NULL,
-        time_updated integer NOT NULL
-      )`,
-    )
+  const tables = yield* db
+    .all<{ name: string }>(sql`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
     .pipe(Effect.orDie)
+  return tables.map((table) => table.name)
 })
 
 describe("built-in tool permission guards", () => {
+  it.live("creates the memory and schedule tables on a fresh database", () =>
+    Effect.gen(function* () {
+      const names = yield* tableNames
+      // A clean install runs `schema.up`, which is the generated schema, and then records every
+      // migration as completed without replaying it. So these tables only exist here if the
+      // generated schema declares them — no test-side workaround, no migration replay.
+      expect(names).toContain("memory")
+      expect(names).toContain("schedule")
+    }),
+  )
+
   it.live("guards computer per action and reaches the desktop only once allowed", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
@@ -240,7 +242,17 @@ describe("built-in tool permission guards", () => {
           dir.path,
           Effect.gen(function* () {
             const registry = yield* ToolRegistry.Service
-            yield* createMemoryTable
+            // `memory.project_id` references `project(id)`, the same way `permission` does, so the
+            // resolved project has to exist before the tool can write. In production the project
+            // service owns that row; here it is created by hand, as `permission.test.ts` does.
+            const location = yield* Location.Service
+            const { db } = yield* Database.Service
+            yield* db
+              .insert(ProjectTable)
+              .values({ id: location.project.id, worktree: AbsolutePath.make(dir.path), sandboxes: [] })
+              .onConflictDoNothing()
+              .run()
+              .pipe(Effect.orDie)
 
             reset()
             denyAction = "memory_record"
