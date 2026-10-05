@@ -69,10 +69,12 @@ OpenCodeAsse/                 Monorepo (30+ packages)
 - **Brouillons persistants** : le texte non envoyé survit à un redémarrage.
 - **Migration depuis l'ancienne version Tauri** de l'app.
 - **Sous-agents réels** : l'outil `subagent` délègue une mission à une vraie session enfant — agent
-  éphémère, jeu de permissions propre, réponse du modèle renvoyée à l'appelant. Voir §8 pour les
+  éphémère, jeu de permissions propre, réponse du modèle renvoyée à l'appelant. **Testé uniquement
+  avec un faux modèle** : aucun run contre un vrai fournisseur n'a été exécuté. Voir §8 pour les
   limites connues.
 - **Logging et export de diagnostics** (electron-log, crash reporter, net log).
-- **14 fichiers de tests unitaires** couvrant IPC, onboarding, store, updater et WSL.
+- **15 fichiers de tests unitaires** couvrant IPC, onboarding, store, updater, WSL et la
+  configuration d'empaquetage.
 - **Canal « asse »** : nom, identifiant (`ai.opencode.desktop.asse`) et icônes dédiés, coexistants
   avec les canaux dev / beta / prod.
 
@@ -133,16 +135,41 @@ bun install                      # installer les dépendances
 bun run dev:desktop              # lancer en mode développement
 ```
 
-Autres commandes utiles (dans `packages/desktop`) :
+Autres commandes utiles. **Les scripts d'empaquetage ne vivent que dans
+`packages/desktop/package.json`** : la racine n'expose aucun script `package*`, donc
+`bun run package:mac` lancé depuis la racine échoue. Il faut se placer dans le paquet, ou préfixer
+par `bun --cwd packages/desktop`.
 
 ```bash
-bun run typecheck                # vérifier les types
-bun run build                    # compiler sans empaqueter
+cd packages/desktop
+bun run typecheck                     # vérifier les types
+bun run build                         # compiler sans empaqueter (déclenche prebuild)
 OPENCODE_CHANNEL=asse bun run build   # compiler pour le canal « asse »
-bun run package:mac              # générer le .dmg
-bun run package:win              # installer Windows
-bun run package:linux            # AppImage / deb / rpm
+bun run package                       # empaqueter pour l'OS courant
+bun run package:mac                   # --mac   → .dmg
+bun run package:win                   # --win   → installateur NSIS
+bun run package:linux                 # --linux → AppImage, deb, rpm
 ```
+
+Cibles vérifiées dans `electron-builder.config.ts` (les quatre canaux `dev`, `beta`, `prod` et
+`asse` donnent exactement les mêmes) :
+
+| Script | Drapeau | `target` déclaré | Artefacts |
+|---|---|---|---|
+| `package:mac` | `--mac` | `mac.target: ["dmg"]` | `.dmg` |
+| `package:linux` | `--linux` | `linux.target: ["AppImage", "deb", "rpm"]` | AppImage, `.deb`, `.rpm` |
+| `package:win` | `--win` | `win.target: ["nsis"]` | installateur NSIS |
+
+Deux pièges à connaître :
+
+- **`package:*` ne compile pas.** Il n'existe aucun hook `prepackage` : lancer `bun run package:mac`
+  sans `bun run build` préalable empaquette un `out/` absent ou périmé. C'est `build` qui déclenche
+  `prebuild` (icônes, CLI, moteur).
+- **Pas de compilation croisée.** Chaque cible ne se construit que sur son propre OS, et `--mac` ne
+  produit que l'architecture de la machine hôte. Il n'y a plus de cible `zip` à côté du `dmg`.
+
+Le canal ne change ni les cibles ni la signature : il ne modifie que l'identifiant d'application, le
+nom du produit, le protocole (`opencode` / `opencode-asse`) et la publication.
 
 ## 8. Problèmes connus
 
@@ -165,29 +192,41 @@ bun run package:linux            # AppImage / deb / rpm
 - **Sous-agent : comportement réel et limites** (vérifié le 05/10/2026). `subagent` exécute
   désormais un vrai run : il crée une session enfant (`parentID`), y déclare un agent éphémère
   `subagent-<rôle>-<taskId>` (25 étapes maximum), lui applique un jeu de règles, envoie le prompt,
-  attend la fin du run et renvoie la réponse du modèle. Points à connaître :
+  attend la fin du run et renvoie la réponse du modèle. **Tout cela n'a été testé qu'avec un faux
+  modèle** : les tests couvrent bien le cycle complet (session enfant, agent éphémère, règles, attente
+  de fin, extraction de la réponse) mais avec un modèle factice qui rejoue des tours scriptés. Aucun
+  appel à un vrai fournisseur n'a été exécuté, donc la latence réelle, le coût, les erreurs de
+  fournisseur et la qualité des réponses d'un vrai modèle ne sont pas vérifiés. Points à connaître :
   - **Liste d'autorisés, pas liste d'interdits.** Les rôles en lecture seule (`researcher`,
     `code_reviewer`, `brainstormer`, `critic`, `outliner`) reçoivent d'abord un refus global, puis
     uniquement les outils de leur `recommendedTools` qui n'écrivent pas. Un enfant `researcher` reçoit
     donc exactement `read`, `grep`, `glob`, `websearch`, `webfetch` — ni `write`, ni `edit`, ni `bash`,
     ni `computer`, ni `browser`, ni `mod`, ni `memory_*`, ni `schedule`, ni `mcp_store`.
-  - **Les rôles qui écrivent gardent tout.** `code_builder` et consorts reçoivent les 24 outils du
-    moteur, moins `subagent` : un sous-agent ne peut jamais en engendrer un autre.
+  - **Les rôles qui écrivent gardent tout.** Le moteur expose **25** outils ; un enfant `code_builder`
+    en reçoit **24** — tous, sauf `subagent`, qu'un sous-agent ne peut donc jamais engendrer. (Compté
+    en matérialisant le registre avec `rulesFor("code_builder", …)` : 25 outils au total, 24 pour
+    l'enfant, `subagent` seul retiré.)
   - **Réouverture refusée.** L'agent enfant est éphémère et disparaît à la fin du run. Une session
     enfant rouverte ensuite ne résout plus son agent et se voit refuser **tous** ses outils — choix
     volontaire, préféré à la réapplication des règles.
   - **Non câblé** : `steer` en cours de run, et le mode arrière-plan.
-  - **Limite héritée** : sur les 24 outils reçus par un enfant qui écrit, **12 n'appellent aucune
-    vérification de permission** (`browser`, `computer`, `mcp_store`, les quatre `memory_*`, `mod`,
-    `observer`, `read_image`, `read_pdf`, `schedule`) — ils s'exécutent donc sans contrôle pour cet
-    enfant.
-- **Bash : les commandes en lecture seule ne demandent pas d'autorisation.**
+  - **Limite héritée, en grande partie corrigée.** Sur les 24 outils reçus par un enfant qui écrit,
+    **12 n'appelaient aucune vérification de permission**. Huit en ont désormais une : `browser`,
+    `computer`, `mcp_store`, `memory_record`, `mod`, `read_image`, `read_pdf` et `schedule`
+    (`read_image` et `read_pdf` réclament en plus `external_directory` hors de la Location, comme
+    `read`). Restent sans invite `memory_list`, `memory_recall` et `memory_reflect`, qui ne font que
+    lire ce qui est déjà stocké, et **`observer`**, dont les actions `dismiss` et `reset` modifient
+    pourtant un état persisté — c'est le dernier outil à traiter.
+- **Bash : les commandes en lecture seule ne demandent pas d'autorisation — sauf si elles visent un
+  secret.**
   `packages/core/src/sandbox/bash-readonly.ts` laisse passer sans invite les commandes prouvées non
   mutantes (`ls`, `cat`, `pwd`, `git log`…), refuse dès qu'un opérateur shell apparaît (`;`, `|`,
-  `>`, `$( )`) et compare le nom exact du programme (`lsof` n'est pas `ls`). Conséquence à connaître :
-  `cat ~/.ssh/id_rsa` ne déclenche aucune demande. Un refus **global** sur `bash` reste efficace
-  (l'outil n'est alors pas proposé du tout), mais un refus visant une ressource précise serait
-  contourné : la vérification est sautée, pas résolue en « autorisé ».
+  `>`, `$( )`) et compare le nom exact du programme (`lsof` n'est pas `ls`). L'auto-approbation est en
+  plus refusée dès qu'un argument touche un fichier sensible (`~/.ssh`, `.env*`, `*.pem`, `*.key`,
+  `id_rsa*`, `~/.aws`, `~/.config/gcloud`, `~/.npmrc`, `auth.json`) ou sort de la Location : dans ce
+  cas l'outil demande l'autorisation. Le jeu de règles est désormais **toujours évalué** — `assert`
+  est appelé avec `prompt: false` au lieu d'être sauté — donc un `deny` visant une ressource précise
+  bloque bien une commande en lecture seule.
 - **Pas de mode hors-ligne** : le moteur a besoin du réseau pour appeler les modèles.
 
 ## 9. Idées d'amélioration
@@ -198,8 +237,11 @@ _(section à compléter)_
 - [ ] Activer la signature et la notarisation macOS pour pouvoir distribuer
 - [x] Brancher un vrai moteur d'exécution pour les sous-agents — fait : session enfant réelle, liste
       d'autorisés, réouverture refusée
-- [ ] Ajouter une vérification de permission aux 12 outils qui n'en ont aucune (`computer`,
-      `browser`, `mcp_store`, `memory_*`, `mod`, `observer`, `read_image`, `read_pdf`, `schedule`)
+- [ ] Valider le sous-agent contre un vrai modèle : les tests n'utilisent qu'un faux modèle
+- [x] Ajouter une vérification de permission aux outils qui n'en avaient aucune — fait pour `browser`,
+      `computer`, `mcp_store`, `memory_record`, `mod`, `read_image`, `read_pdf` et `schedule`
+- [ ] Traiter le dernier outil sans vérification : `observer` (`dismiss` et `reset` écrivent un état
+      persisté)
 - [ ] Remplacer le client vendorisé par le package du workspace
 - [ ] Migrer les modules `mod/` et `observer/` vers l'architecture Effect (Location-scoped) — le
       sous-agent l'est déjà, sauf son accesseur de publication
