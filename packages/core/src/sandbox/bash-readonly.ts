@@ -1,5 +1,8 @@
 export * as BashReadOnly from "./bash-readonly"
 
+import os from "node:os"
+import path from "node:path"
+
 /**
  * Token-based read-only command inspector.
  * Identifies commands that are purely consultative (no filesystem/state mutations)
@@ -9,6 +12,10 @@ export * as BashReadOnly from "./bash-readonly"
  * program name (or git subcommand) — never a textual prefix. A command that
  * contains any shell operator (pipe, redirect, command substitution, compound
  * separators) is never auto-approved.
+ *
+ * Being non-mutating is not the same as being safe: `cat` cannot write, but
+ * `cat ~/.ssh/id_rsa` still leaks a key. `referencesSensitivePath` covers that
+ * second question, and callers must ask both before skipping a prompt.
  *
  * Fail-safe: if uncertain → returns false (prompt user).
  */
@@ -162,4 +169,59 @@ export function isReadOnly(command: string): boolean {
   const validator = validators.get(words[0])
   if (!validator) return false
   return validator(words.slice(1))
+}
+
+/** Credential directories under the user's home, relative to it. */
+const SENSITIVE_DIRECTORIES = [".ssh", ".aws", ".config/gcloud"]
+
+/** Filenames that hold credentials wherever they live. */
+const SENSITIVE_BASENAMES = new Set([".npmrc", "auth.json"])
+
+/** Filename shapes that mark a file as a secret. */
+const SENSITIVE_NAMES = [/^\.env/, /^id_rsa/, /\.pem$/, /\.key$/]
+
+const isSensitiveName = (name: string) =>
+  SENSITIVE_BASENAMES.has(name) || SENSITIVE_NAMES.some((pattern) => pattern.test(name))
+
+/** True when `child` is `parent` itself or lives under it. */
+const contains = (parent: string, child: string) =>
+  child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : `${parent}${path.sep}`)
+
+/**
+ * Returns true when an argument of the command points at a credential file, a credential
+ * directory, or a path outside `cwd`.
+ *
+ * This is the second half of the auto-approval decision. `isReadOnly` answers "can this command
+ * change anything"; this answers "would running it disclose anything the caller did not already
+ * have". `cat ~/.ssh/id_rsa`, `cat .env`, `ls ~/.aws` and `cat /etc/passwd` are all read-only and
+ * all must still be approved, so callers check both functions before skipping a prompt.
+ *
+ * Fail-safe: an unparsable or unrecognised token is treated as suspicious.
+ */
+export function referencesSensitivePath(command: string, cwd: string): boolean {
+  const trimmed = command.trim()
+  if (!trimmed) return false
+  const home = os.homedir()
+  const root = path.resolve(cwd)
+
+  return tokens(trimmed)
+    .map(unquote)
+    .some((token) => {
+      const value = token.replace(/[;,|&]+$/, "")
+      if (!value || value.startsWith("-")) return false
+      const expanded = value.startsWith("~") ? path.join(home, value.slice(1)) : value
+      const resolved = path.resolve(root, expanded)
+
+      // A credential filename is sensitive wherever it lives, including as a bare relative name.
+      if (isSensitiveName(path.basename(resolved))) return true
+
+      // Everything else is only suspicious when the token actually denotes a path.
+      if (!value.includes("/") && !value.startsWith("~") && !value.startsWith(".")) return false
+
+      const relative = path.relative(home, resolved)
+      if (SENSITIVE_DIRECTORIES.some((dir) => relative === dir || relative.startsWith(`${dir}${path.sep}`)))
+        return true
+
+      return !contains(root, resolved)
+    })
 }

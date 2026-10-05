@@ -137,3 +137,50 @@ describe("BashReadOnly exact-name matching", () => {
     expect(BashReadOnly.isReadOnly("git diff --output=fichier")).toBe(false)
   })
 })
+
+describe("BashReadOnly sensitive paths", () => {
+  const cwd = "/tmp/bash-readonly-repo"
+
+  test("flags credential files and directories wherever they live", () => {
+    expect(BashReadOnly.referencesSensitivePath("cat ~/.ssh/id_rsa", cwd)).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("cat .env", cwd)).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("ls ~/.aws", cwd)).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("cat .env.local", cwd)).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("cat id_rsa", cwd)).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("cat server.pem", cwd)).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("cat cert.key", cwd)).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("cat ~/.npmrc", cwd)).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("cat auth.json", cwd)).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("cat ~/.config/gcloud/credentials.db", cwd)).toBe(true)
+  })
+
+  test("flags anything reaching outside the Location", () => {
+    expect(BashReadOnly.referencesSensitivePath("cat /etc/passwd", cwd)).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("cat ../outside.txt", cwd)).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("ls ..", cwd)).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("cat sub/../../outside.txt", cwd)).toBe(true)
+  })
+
+  test("leaves an ordinary read-only command alone", () => {
+    expect(BashReadOnly.referencesSensitivePath("ls", cwd)).toBe(false)
+    expect(BashReadOnly.referencesSensitivePath("git log", cwd)).toBe(false)
+    expect(BashReadOnly.referencesSensitivePath("pwd", cwd)).toBe(false)
+    expect(BashReadOnly.referencesSensitivePath("cat README.md", cwd)).toBe(false)
+    expect(BashReadOnly.referencesSensitivePath("cat src/index.ts", cwd)).toBe(false)
+    expect(BashReadOnly.referencesSensitivePath("grep -rn 'foo' src/", cwd)).toBe(false)
+    expect(BashReadOnly.referencesSensitivePath("find . -name '*.ts'", cwd)).toBe(false)
+    expect(BashReadOnly.referencesSensitivePath("bun run typecheck", cwd)).toBe(false)
+    expect(BashReadOnly.referencesSensitivePath("tsgo --noEmit", cwd)).toBe(false)
+    expect(BashReadOnly.referencesSensitivePath("git diff HEAD~1", cwd)).toBe(false)
+    expect(BashReadOnly.referencesSensitivePath("hostname -f", cwd)).toBe(false)
+    expect(BashReadOnly.referencesSensitivePath("echo hello", cwd)).toBe(false)
+  })
+
+  test("keeps isReadOnly independent, so callers must ask both questions", () => {
+    // Both of these are provably non-mutating, and both must still be approved.
+    expect(BashReadOnly.isReadOnly("cat ~/.ssh/id_rsa")).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("cat ~/.ssh/id_rsa", cwd)).toBe(true)
+    expect(BashReadOnly.isReadOnly("cat .env")).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("cat .env", cwd)).toBe(true)
+  })
+})

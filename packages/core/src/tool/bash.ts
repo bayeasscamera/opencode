@@ -145,17 +145,25 @@ const layer = Layer.effectDiscard(
                   `Command argument references external directory ${path.join(directory, "*").replaceAll("\\", "/")}. Bash runs with host-user filesystem, process, and network authority; this scan is advisory only.`,
               )
 
-              // Read-only bypass: skip interactive permission prompt for safe consultation commands
-              if (!BashReadOnly.isReadOnly(input.command)) {
-                yield* permission.assert({
+              // A read-only command skips the interactive prompt, but never the ruleset: `assert` is
+              // still called with `prompt: false`, so a targeted denial blocks instead of being
+              // skipped. Auto-approval is also refused when an argument reaches a credential file or
+              // a path outside this Location, because `cat` cannot write but `cat ~/.ssh/id_rsa`
+              // still discloses a key.
+              const autoApproved =
+                BashReadOnly.isReadOnly(input.command) &&
+                !BashReadOnly.referencesSensitivePath(input.command, target.canonical)
+              yield* permission.assert(
+                {
                   action: name,
                   resources: [input.command],
                   save: [input.command],
                   sessionID: context.sessionID,
                   agent: context.agent,
                   source,
-                })
-              }
+                },
+                { prompt: !autoApproved },
+              )
 
               const validation = mods.runBeforeCommand(input.command, target.canonical)
               if (!validation.allowed) {

@@ -312,4 +312,34 @@ describe("PermissionV2", () => {
       expect(yield* saved.list()).toEqual([])
     }),
   )
+
+  it.effect("skips the prompt but never the ruleset when the prompt is off", () =>
+    Effect.gen(function* () {
+      yield* setup()
+      const service = yield* PermissionV2.Service
+      const bash = assertion({ action: "bash", resources: ["pwd"] })
+
+      // With no rule for this action the resolution is `ask`, which is what would prompt a user.
+      expect(PermissionV2.evaluate("bash", "pwd")).toMatchObject({ effect: "ask" })
+
+      // `prompt: false` returns immediately instead of suspending on a reply, and queues nothing.
+      yield* service.assert(bash, { prompt: false })
+      expect(yield* service.list()).toEqual([])
+    }),
+  )
+
+  it.effect("honours a targeted denial even when the prompt is off", () =>
+    Effect.gen(function* () {
+      yield* setup([{ action: "bash", resource: "cat README.md", effect: "deny" }])
+      const service = yield* PermissionV2.Service
+
+      // `cat README.md` is read-only and would normally be auto-approved. A rule that names it must
+      // still block, because auto-approval relaxes the prompt rather than skipping the resolution.
+      const blocked = yield* service
+        .assert(assertion({ action: "bash", resources: ["cat README.md"] }), { prompt: false })
+        .pipe(Effect.flip)
+      expect(blocked).toBeInstanceOf(PermissionV2.BlockedError)
+      expect(yield* service.list()).toEqual([])
+    }),
+  )
 })

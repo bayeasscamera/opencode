@@ -48,6 +48,17 @@ export const AssertInput = Schema.Struct({
 }).annotate({ identifier: "PermissionV2.AssertInput" })
 export type AssertInput = typeof AssertInput.Type
 
+export interface AssertOptions {
+  /**
+   * When false, an `ask` outcome is treated as approved instead of raising a prompt. A `deny`
+   * outcome still blocks.
+   *
+   * Callers use this for work they have already proven safe, such as a read-only shell command. The
+   * ruleset is still resolved, so a targeted denial is never skipped — only the prompt is.
+   */
+  readonly prompt?: boolean
+}
+
 export const ReplyInput = Schema.Struct({
   requestID: ID,
   reply: Reply,
@@ -97,7 +108,10 @@ export function merge(...rulesets: Permission.Ruleset[]): Permission.Ruleset {
 
 export interface Interface {
   readonly ask: (input: AssertInput) => EffectRuntime.Effect<AskResult, SessionV2.NotFoundError>
-  readonly assert: (input: AssertInput) => EffectRuntime.Effect<void, Error | SessionV2.NotFoundError>
+  readonly assert: (
+    input: AssertInput,
+    options?: AssertOptions,
+  ) => EffectRuntime.Effect<void, Error | SessionV2.NotFoundError>
   readonly reply: (input: ReplyInput) => EffectRuntime.Effect<void, NotFoundError>
   readonly get: (id: ID) => EffectRuntime.Effect<Request | undefined>
   readonly forSession: (sessionID: SessionV2.ID) => EffectRuntime.Effect<ReadonlyArray<Request>>
@@ -200,7 +214,7 @@ const layer = Layer.effect(
       return { id: value.id, effect: result.effect }
     })
 
-    const assert = EffectRuntime.fn("PermissionV2.assert")((input: AssertInput) =>
+    const assert = EffectRuntime.fn("PermissionV2.assert")((input: AssertInput, options?: AssertOptions) =>
       EffectRuntime.uninterruptibleMask((restore) =>
         EffectRuntime.gen(function* () {
           const result = yield* evaluateInput(input)
@@ -209,7 +223,9 @@ const layer = Layer.effect(
               rules: relevant(input, result.rules),
             })
           }
-          if (result.effect === "allow") return
+          // `prompt: false` relaxes an `ask` for work the caller already proved safe. It never
+          // relaxes a `deny`, which is handled above.
+          if (result.effect === "allow" || options?.prompt === false) return
           const item = yield* create(request(input), input.agent)
           return yield* restore(Deferred.await(item.deferred)).pipe(
             EffectRuntime.catchTag("PermissionV2.DeclinedError", (error) => EffectRuntime.die(error)),

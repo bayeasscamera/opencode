@@ -24,6 +24,7 @@ import { toolIdentity, executeTool, settleTool, toolDefinitions } from "./lib/to
 
 const sessionID = SessionV2.ID.make("ses_bash_tool_test")
 const assertions: PermissionV2.AssertInput[] = []
+const assertOptions: Array<PermissionV2.AssertOptions | undefined> = []
 const runs: Array<{
   readonly command: string
   readonly cwd?: string
@@ -47,8 +48,11 @@ let afterPermission = (_input: PermissionV2.AssertInput): Effect.Effect<void> =>
 const permission = Layer.succeed(
   PermissionV2.Service,
   PermissionV2.Service.of({
-    assert: (input) =>
-      Effect.sync(() => assertions.push(input)).pipe(
+    assert: (input, options) =>
+      Effect.sync(() => {
+        assertions.push(input)
+        assertOptions.push(options)
+      }).pipe(
         Effect.andThen(Effect.suspend(() => afterPermission(input))),
         Effect.andThen(
           input.action === denyAction ? Effect.fail(new PermissionV2.BlockedError({ rules: [] })) : Effect.void,
@@ -81,6 +85,7 @@ const config = Layer.succeed(
 
 const reset = () => {
   assertions.length = 0
+  assertOptions.length = 0
   runs.length = 0
   denyAction = undefined
   runFailure = undefined
@@ -172,10 +177,7 @@ describe("BashTool", () => {
               combineOutput: true,
               maxOutputBytes: BashTool.MAX_CAPTURE_BYTES,
             })
-            // `pwd` is provably read-only, so BashReadOnly auto-approves it and the bash assertion is
-            // skipped entirely. The assertion path is covered by "asserts bash for a command that is
-            // not read-only".
-            expect(assertions).toEqual([])
+            expect(assertions).toMatchObject([{ sessionID, action: "bash", resources: ["pwd"], save: ["pwd"] }])
           }),
         )
       },
@@ -216,8 +218,7 @@ describe("BashTool", () => {
             : Effect.void
         return Effect.promise(() => fs.mkdir(workdir)).pipe(
           Effect.andThen(
-            // Must not be read-only, otherwise the bypass skips the approval this test races against.
-            withTool(tmp.path, (registry) => executeTool(registry, call({ command: "printf hi", workdir: "src" }))),
+            withTool(tmp.path, (registry) => executeTool(registry, call({ command: "pwd", workdir: "src" }))),
           ),
           Effect.andThen(
             Effect.sync(() => {
@@ -270,8 +271,7 @@ describe("BashTool", () => {
       ([active, outside]) => {
         reset()
         return withTool(active.path, (registry) =>
-          // Not read-only, so both the external_directory and the bash assertion are exercised.
-          executeTool(registry, call({ command: "printf hi", workdir: outside.path })),
+          executeTool(registry, call({ command: "pwd", workdir: outside.path })),
         ).pipe(
           Effect.andThen(
             Effect.sync(() => {
@@ -298,8 +298,6 @@ describe("BashTool", () => {
         Effect.gen(function* () {
           reset()
           denyAction = "external_directory"
-          // `pwd` is read-only, but the external_directory assertion runs before the read-only
-          // bypass, so an external workdir is still refused for a read-only command.
           yield* withTool(active.path, (registry) =>
             executeTool(registry, call({ command: "pwd", workdir: outside.path })),
           )
@@ -308,9 +306,7 @@ describe("BashTool", () => {
 
           reset()
           denyAction = "bash"
-          // Not read-only: the read-only bypass skips the assertion entirely, so a read-only command
-          // would run here despite the denial. Only a non-read-only command reaches this check.
-          yield* withTool(active.path, (registry) => executeTool(registry, call({ command: "printf hi" })))
+          yield* withTool(active.path, (registry) => executeTool(registry, call({ command: "pwd" })))
           expect(assertions.map((item) => item.action)).toEqual(["bash"])
           expect(runs).toEqual([])
         }),
@@ -331,10 +327,7 @@ describe("BashTool", () => {
         return withTool(active.path, (registry) => settleTool(registry, call({ command: `cat ${target}` }))).pipe(
           Effect.andThen((settled) =>
             Effect.sync(() => {
-              // `cat <path>` is read-only, so no assertion runs at all: the external path appears only
-              // in a command argument, and command-argument paths are advisory by design. This is the
-              // strongest form of "without enforcing approval" — not even the bash prompt is reached.
-              expect(assertions).toEqual([])
+              expect(assertions.map((item) => item.action)).toEqual(["bash"])
               expect(runs).toHaveLength(1)
               expect(settled.output?.structured).toMatchObject({
                 truncated: false,
@@ -429,21 +422,24 @@ describe("BashTool", () => {
     ),
   )
 
-  // The read-only bypass in `src/sandbox/bash-readonly.ts` auto-approves provably non-mutating
-  // commands. These two tests pin both sides of it: the assertion still runs for a mutating command,
-  // and the external_directory check still runs before the bypass is consulted.
-  it.live("asserts bash for a command that is not read-only", () =>
+  // Auto-approval relaxes the prompt for a read-only command; it never skips the ruleset. The three
+  // tests below pin that: the assertion always runs, `prompt` decides whether the user is asked, and
+  // a denial is honoured even when the prompt is off.
+  it.live("requests a prompt when a read-only command reads a credential file", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
       (tmp) => {
         reset()
-        return withTool(tmp.path, (registry) => executeTool(registry, call({ command: "printf hi" }))).pipe(
+        return Effect.forEach(
+          ["cat ~/.ssh/id_rsa", "cat .env", "ls ~/.aws"],
+          (command, index) =>
+            withTool(tmp.path, (registry) => executeTool(registry, call({ command }, `call-secret-${index}`))),
+          { discard: true },
+        ).pipe(
           Effect.andThen(
             Effect.sync(() => {
-              expect(assertions).toMatchObject([
-                { sessionID, action: "bash", resources: ["printf hi"], save: ["printf hi"] },
-              ])
-              expect(runs).toHaveLength(1)
+              expect(assertions.map((item) => item.action)).toEqual(["bash", "bash", "bash"])
+              expect(assertOptions.map((options) => options?.prompt)).toEqual([true, true, true])
             }),
           ),
         )
@@ -452,7 +448,51 @@ describe("BashTool", () => {
     ),
   )
 
-  it.live("checks external_directory for a read-only command before the read-only bypass", () =>
+  it.live("keeps the prompt off for a read-only command that touches nothing sensitive", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return Effect.forEach(
+          ["cat README.md", "ls", "git log"],
+          (command, index) =>
+            withTool(tmp.path, (registry) => executeTool(registry, call({ command }, `call-clean-${index}`))),
+          { discard: true },
+        ).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              expect(assertions.map((item) => item.action)).toEqual(["bash", "bash", "bash"])
+              expect(assertOptions.map((options) => options?.prompt)).toEqual([false, false, false])
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("blocks a read-only command that a targeted rule denies", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        denyAction = "bash"
+        return withTool(tmp.path, (registry) => executeTool(registry, call({ command: "cat README.md" }))).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              // `cat README.md` is auto-approved, yet the denial must still be resolved and honoured.
+              expect(assertOptions.map((options) => options?.prompt)).toEqual([false])
+              expect(assertions.map((item) => item.action)).toEqual(["bash"])
+              expect(runs).toEqual([])
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("checks external_directory for a read-only command before deciding the prompt", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => Promise.all([tmpdir(), tmpdir()])),
       ([active, outside]) => {
@@ -462,7 +502,10 @@ describe("BashTool", () => {
         ).pipe(
           Effect.andThen(
             Effect.sync(() => {
-              expect(assertions.map((item) => item.action)).toEqual(["external_directory"])
+              // `pwd` carries no path argument, so the command itself stays auto-approved. The
+              // external workdir is what has to be approved, and that check runs first.
+              expect(assertions.map((item) => item.action)).toEqual(["external_directory", "bash"])
+              expect(assertOptions[1]?.prompt).toBe(false)
               expect(runs).toHaveLength(1)
             }),
           ),
