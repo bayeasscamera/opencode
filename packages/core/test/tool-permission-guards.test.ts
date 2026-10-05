@@ -11,6 +11,7 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { Database } from "../src/database/database"
+import { ComputerUse } from "../src/computer-use"
 import { EventV2 } from "../src/event"
 import { YouShouldKnow } from "../src/observer"
 import { ApplicationTools } from "../src/tool/application-tools"
@@ -56,19 +57,35 @@ const observer = Layer.succeed(
   }),
 )
 
-// The real built-in graph, with only the permission service and the observer replaced. Every tool
-// below is reached through the same registry a Session uses, so the assertion runs where it would in
-// production.
+// The real controller shells out to `screencapture` and `osascript`, which would act on the machine
+// this test runs on. Replacing it means the `computer` tool has no route to the real desktop at all,
+// so the test never needs a flag to keep itself safe.
+const desktopCalls: string[] = []
+const desktop = Layer.succeed(
+  ComputerUse.Service,
+  ComputerUse.Service.of({
+    screenshot: (dest: string) => Effect.sync(() => void desktopCalls.push(`screenshot:${dest}`)),
+    keystroke: (text: string) => Effect.sync(() => void desktopCalls.push(`keystroke:${text}`)),
+    keyCombo: (key: string, modifiers: ReadonlyArray<string>) =>
+      Effect.sync(() => void desktopCalls.push(`keyCombo:${key}:${modifiers.join("+")}`)),
+  }),
+)
+
+// The real built-in graph, with only the permission service, the observer and the desktop replaced.
+// Every tool below is reached through the same registry a Session uses, so the assertion runs where
+// it would in production.
 const it = testEffect(
   AppNodeBuilder.build(LayerNode.group([ApplicationTools.node, Database.node, EventV2.node, LocationServiceMap.node]), [
     [PermissionV2.node, permission],
     [YouShouldKnow.node, observer],
+    [ComputerUse.node, desktop],
   ]),
 )
 
 const reset = () => {
   assertions.length = 0
   observerCalls.length = 0
+  desktopCalls.length = 0
   denyAction = undefined
   denyResource = undefined
 }
@@ -112,7 +129,48 @@ describe("built-in tool permission guards", () => {
     }),
   )
 
-  it.live("guards computer per action and reaches the desktop only once allowed", () =>
+  it.live("guards computer per action and drives only the injected desktop", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((dir) =>
+        inLocation(
+          dir.path,
+          Effect.gen(function* () {
+            const registry = yield* ToolRegistry.Service
+
+            reset()
+            denyAction = "computer"
+            const denied = yield* settleTool(registry, call("computer", { action: "click" }))
+            expect(textOf(denied)).toContain("Permission denied: computer")
+            // A denied call never reaches the desktop.
+            expect(desktopCalls).toEqual([])
+
+            reset()
+            const observed = yield* settleTool(registry, call("computer", { action: "screenshot" }))
+            expect(textOf(observed)).toContain("Capture d'écran effectuée avec succès")
+            expect(assertions).toMatchObject([{ action: "computer", resources: ["screenshot"] }])
+            // Only the injected controller was asked, and with a `.png` destination.
+            expect(desktopCalls).toHaveLength(1)
+            expect(desktopCalls[0]).toMatch(/^screenshot:.*\.png$/)
+
+            reset()
+            yield* settleTool(registry, call("computer", { action: "type", text: "bonjour" }))
+            expect(desktopCalls).toEqual(["keystroke:bonjour"])
+            expect(assertions).toMatchObject([{ action: "computer", resources: ["type"] }])
+
+            reset()
+            yield* settleTool(registry, call("computer", { action: "key_combo", key: "return", modifiers: ["command"] }))
+            expect(desktopCalls).toEqual(["keyCombo:return:command"])
+            expect(assertions).toMatchObject([{ action: "computer", resources: ["key_combo"] }])
+          }),
+        ),
+      ),
+    ),
+  )
+
+  it.live("confines a background worker without ever touching the desktop", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
       (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
@@ -123,19 +181,21 @@ describe("built-in tool permission guards", () => {
           Effect.gen(function* () {
             const registry = yield* ToolRegistry.Service
             const previous = process.env.OPENCODE_BACKGROUND_WORKER
-            // Keeps the allowed branch off the real desktop: the confinement path returns before any
-            // AppleScript or screencapture call.
             process.env.OPENCODE_BACKGROUND_WORKER = "true"
             try {
               reset()
-              denyAction = "computer"
-              const denied = yield* settleTool(registry, call("computer", { action: "click" }))
-              expect(textOf(denied)).toContain("Permission denied: computer")
-
-              reset()
-              const allowed = yield* settleTool(registry, call("computer", { action: "click" }))
-              expect(textOf(allowed)).toContain("Confinement")
+              const confined = yield* settleTool(registry, call("computer", { action: "click" }))
+              expect(textOf(confined)).toContain("Sécurité Confinement")
+              // The confinement check returns before the controller is reached.
+              expect(desktopCalls).toEqual([])
+              // It still had to ask, so the refusal is not a way to bypass the guard.
               expect(assertions).toMatchObject([{ action: "computer", resources: ["click"] }])
+
+              // Observation stays allowed to a background worker, but still only through the fake.
+              reset()
+              const observed = yield* settleTool(registry, call("computer", { action: "screenshot" }))
+              expect(textOf(observed)).toContain("Capture d'écran effectuée avec succès")
+              expect(desktopCalls).toHaveLength(1)
             } finally {
               if (previous === undefined) delete process.env.OPENCODE_BACKGROUND_WORKER
               else process.env.OPENCODE_BACKGROUND_WORKER = previous

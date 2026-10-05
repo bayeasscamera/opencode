@@ -33,6 +33,7 @@ import { Snapshot } from "./snapshot"
 import { SystemContextBuiltIns } from "./system-context/builtins"
 import { SystemContextRegistry } from "./system-context/registry"
 import { BuiltInTools } from "./tool/builtins"
+import { ComputerUse } from "./computer-use"
 import { ReadToolFileSystem } from "./tool/read-filesystem"
 import { ToolRegistry } from "./tool/registry"
 import { ToolOutputStore } from "./tool-output-store"
@@ -66,6 +67,7 @@ export const locationServices = LayerNode.group([
   LocationMutation.node,
   FileMutation.node,
   PermissionV2.node,
+  ComputerUse.node,
   ToolOutputStore.node,
   ToolRegistry.node,
   ToolRegistry.toolsNode,
