@@ -471,6 +471,44 @@ describe("BashTool", () => {
     ),
   )
 
+  it.live("asks for every command that is not provably safe, and stays silent only when it is", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        const cases: ReadonlyArray<{ readonly command: string; readonly prompt: boolean }> = [
+          // Provably read-only and touching nothing sensitive: the prompt is relaxed.
+          { command: "cat README.md", prompt: false },
+          { command: "ls", prompt: false },
+          // Read-only, but an argument discloses a credential: the prompt is raised.
+          { command: "cat ~/.ssh/id_rsa", prompt: true },
+          { command: "cat .env", prompt: true },
+          { command: "ls ~/.aws", prompt: true },
+          // Not provably read-only at all: the prompt is raised.
+          { command: "rm -rf dist/", prompt: true },
+        ]
+        return Effect.forEach(
+          cases,
+          (item, index) =>
+            withTool(tmp.path, (registry) =>
+              executeTool(registry, call({ command: item.command }, `call-prompt-${index}`)),
+            ),
+          { discard: true },
+        ).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              // `assert` runs for every command, so the ruleset is always resolved. `prompt` is the
+              // only thing auto-approval relaxes, and it stays true for anything that should ask.
+              expect(assertions.map((item) => item.action)).toEqual(cases.map(() => "bash"))
+              expect(assertOptions.map((options) => options?.prompt)).toEqual(cases.map((item) => item.prompt))
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
   it.live("blocks a read-only command that a targeted rule denies", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),

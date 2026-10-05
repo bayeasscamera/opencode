@@ -184,3 +184,46 @@ describe("BashReadOnly sensitive paths", () => {
     expect(BashReadOnly.referencesSensitivePath("cat .env", cwd)).toBe(true)
   })
 })
+
+/**
+ * One test per credential pattern, so a pattern that stops matching names its own failure instead
+ * of hiding inside a long assertion list.
+ */
+describe("BashReadOnly credential patterns", () => {
+  const cwd = "/tmp/bash-readonly-repo"
+
+  const flagged: ReadonlyArray<readonly [string, string]> = [
+    [".netrc", "cat ~/.netrc"],
+    [".git-credentials", "cat ~/.git-credentials"],
+    [".kube/config", "cat ~/.kube/config"],
+    [".docker/config.json", "cat ~/.docker/config.json"],
+    [".gnupg", "ls ~/.gnupg"],
+    [".pgpass", "cat ~/.pgpass"],
+    ["*.p12", "cat client.p12"],
+    ["*.pfx", "cat bundle.pfx"],
+    ["*.keystore", "cat release.keystore"],
+    ["credentials*", "cat credentials.json"],
+    ["secrets*", "cat secrets.yaml"],
+    [".config/gh", "ls ~/.config/gh"],
+    [".config/gh/hosts.yml", "cat ~/.config/gh/hosts.yml"],
+  ]
+
+  for (const [pattern, command] of flagged) {
+    test(`flags ${pattern}`, () => {
+      expect(BashReadOnly.referencesSensitivePath(command, cwd)).toBe(true)
+    })
+  }
+
+  test("flags a credential store nested under a sensitive directory", () => {
+    expect(BashReadOnly.referencesSensitivePath("cat ~/.gnupg/secring.gpg", cwd)).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("cat ~/.kube/cache/discovery/entry", cwd)).toBe(true)
+    expect(BashReadOnly.referencesSensitivePath("cat ~/.docker/contexts/meta/x", cwd)).toBe(true)
+  })
+
+  test("still leaves ordinary files alone", () => {
+    expect(BashReadOnly.referencesSensitivePath("cat README.md", cwd)).toBe(false)
+    expect(BashReadOnly.referencesSensitivePath("cat src/config.ts", cwd)).toBe(false)
+    expect(BashReadOnly.referencesSensitivePath("cat package.json", cwd)).toBe(false)
+    expect(BashReadOnly.referencesSensitivePath("ls src/", cwd)).toBe(false)
+  })
+})

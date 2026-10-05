@@ -172,13 +172,46 @@ export function isReadOnly(command: string): boolean {
 }
 
 /** Credential directories under the user's home, relative to it. */
-const SENSITIVE_DIRECTORIES = [".ssh", ".aws", ".config/gcloud"]
+const SENSITIVE_DIRECTORIES = [
+  ".ssh",
+  ".aws",
+  ".gnupg",
+  ".kube",
+  ".docker",
+  ".config/gcloud",
+  ".config/gh",
+]
 
-/** Filenames that hold credentials wherever they live. */
-const SENSITIVE_BASENAMES = new Set([".npmrc", "auth.json"])
+/**
+ * Filenames that hold credentials wherever they live. The bare directory names are listed too so
+ * that `ls ~/.gnupg` is caught on the token itself, not only on a path that descends into it.
+ */
+const SENSITIVE_BASENAMES = new Set([
+  ".npmrc",
+  ".netrc",
+  ".git-credentials",
+  ".pgpass",
+  ".gnupg",
+  ".kube",
+  ".docker",
+  "auth.json",
+])
 
 /** Filename shapes that mark a file as a secret. */
-const SENSITIVE_NAMES = [/^\.env/, /^id_rsa/, /\.pem$/, /\.key$/]
+const SENSITIVE_NAMES = [
+  /^\.env/,
+  /^id_rsa/,
+  // Credential stores and private keys, by extension.
+  /\.pem$/,
+  /\.key$/,
+  /\.p12$/,
+  /\.pfx$/,
+  /\.keystore$/,
+  // Tool-generated dumps. Deliberately prefix matches: `credentials.json`, `secrets.yaml` and
+  // `credentials` all count, and a false positive only costs an extra prompt.
+  /^credentials/,
+  /^secrets/,
+]
 
 const isSensitiveName = (name: string) =>
   SENSITIVE_BASENAMES.has(name) || SENSITIVE_NAMES.some((pattern) => pattern.test(name))
