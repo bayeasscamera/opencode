@@ -16,8 +16,11 @@ export const name = "subagent"
 
 const ACTIONS = ["run", "list", "status", "cancel", "retry", "logs", "steer"] as const
 
-// Read-only roles may not write, edit, patch, or run shell commands.
+// Roles that may only observe. Their ruleset is a strict allowlist built from the persona.
 const READ_ONLY_ROLES = new Set(["researcher", "code_reviewer", "brainstormer", "critic", "outliner"])
+// Tools that mutate the workspace, the machine, or persisted state. A read-only role never
+// receives one, even when its persona lists it in `recommendedTools`.
+const MUTATING_TOOLS = new Set(["apply_patch", "bash", "computer", "edit", "mcp_store", "mod", "schedule", "write"])
 const MAX_STEPS = 25
 // Consecutive inactive polls required before a child Session counts as settled.
 const IDLE_CONFIRMATIONS = 3
@@ -31,13 +34,28 @@ const pollMs = () => positiveMs(process.env.OPENCODE_SUBAGENT_POLL_MS, 400)
 
 type Rule = { readonly action: string; readonly resource: string; readonly effect: "allow" | "deny" | "ask" }
 
-/** Permission ruleset applied to the child agent. Exported so the policy is testable directly. */
-export const rulesFor = (role: string): Rule[] => [
-  // A subagent never spawns another subagent.
-  { action: "subagent", resource: "*", effect: "deny" },
+/**
+ * Permission ruleset applied to the child agent. Exported so the policy is testable directly.
+ *
+ * Read-only roles get an allowlist, not a denylist: a leading `deny *` closes everything and only
+ * the persona's own read-only tools are re-opened. `ToolRegistry.whollyDisabled` and
+ * `PermissionV2.evaluate` both resolve a ruleset with `findLast`, so a later `allow` beats the
+ * catch-all, while `subagent` stays refused because its `deny` rule comes last.
+ *
+ * Writable roles keep the previous shape: whatever the parent allows, minus `subagent`.
+ */
+export const rulesFor = (role: string, recommendedTools: ReadonlyArray<string> = []): Rule[] => [
   ...(READ_ONLY_ROLES.has(role)
-    ? ["write", "edit", "apply_patch", "bash"].map((action): Rule => ({ action, resource: "*", effect: "deny" }))
+    ? [
+        { action: "*", resource: "*", effect: "deny" } as const,
+        ...recommendedTools
+          .filter((tool) => !MUTATING_TOOLS.has(tool))
+          .map((tool) => ({ action: tool, resource: "*", effect: "allow" }) as const),
+      ]
     : []),
+  // A subagent never spawns another subagent. Last on purpose: `findLast` makes this win for
+  // every role, allowlisted or not, so the policy does not depend on the order above.
+  { action: "subagent", resource: "*", effect: "deny" },
 ]
 
 // Waits until the child Session is no longer active, requiring several consecutive inactive
@@ -235,7 +253,7 @@ const layer = Layer.effectDiscard(
                     agent.hidden = true
                     agent.system = persona.systemPrompt
                     agent.steps = MAX_STEPS
-                    agent.permissions = rulesFor(role)
+                    agent.permissions = rulesFor(role, persona.recommendedTools)
                   })
                 })
 

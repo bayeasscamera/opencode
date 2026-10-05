@@ -200,7 +200,16 @@ const layer = Layer.effect(
       const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
       const context = entries.map((entry) => entry.message)
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
-      const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions)
+      // A Session pinned to an agent that no longer resolves must not fall back to the default
+      // agent's rights. Ephemeral subagent agents are scoped to their run, so a child Session
+      // resumed after that run ends lands here. `materialize(undefined)` would mean "no ruleset"
+      // and advertise every registered tool, including tools that never consult PermissionV2
+      // (subagent, computer, mcp_store, ...). An orphaned agent gets nothing instead.
+      // A Session that never named an agent keeps the previous "use the default" behaviour.
+      const orphanedAgent = session.agent !== undefined && agent.info === undefined
+      const toolMaterialization = isLastStep
+        ? undefined
+        : yield* tools.materialize(orphanedAgent ? PermissionV2.deniedByDefault : agent.info?.permissions)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
       const request = LLM.request({
         model,

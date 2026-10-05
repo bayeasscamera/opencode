@@ -39,7 +39,7 @@ import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { Tool } from "@opencode-ai/core/tool/tool"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { SubagentTool } from "@opencode-ai/core/tool/subagent"
-import { Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, Option, Schema, Stream } from "effect"
 import { testEffect } from "./lib/effect"
 
 /**
@@ -137,30 +137,44 @@ const replacements: LayerNode.Replacements = [
 
 const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, replacements)
 
-// Minimal stand-ins for the built-in tools so child permission filtering has something to
-// remove. The real built-ins are not part of this focused graph.
+// Stand-ins for the built-in tools so child permission filtering has something to remove. The real
+// built-ins are not part of this focused graph, but every name the subagent policy talks about is
+// registered here, so a tool missing from a child's advertised list is missing because of the
+// ruleset and not because it was never registered.
+const stub = (description: string) =>
+  Tool.make({
+    description,
+    input: Schema.Struct({ path: Schema.String }),
+    output: Schema.Struct({ ok: Schema.Boolean }),
+    execute: () => Effect.succeed({ ok: true }),
+  })
+
+/** Names the read-only policy must strip, plus the read-only tools it must keep. */
+const FIXTURE_TOOL_NAMES = [
+  "read",
+  "grep",
+  "glob",
+  "websearch",
+  "webfetch",
+  "observer",
+  "todowrite",
+  "write",
+  "edit",
+  "apply_patch",
+  "bash",
+  "computer",
+  "browser",
+  "mod",
+  "memory_recall",
+  "schedule",
+  "mcp_store",
+  // A third-party MCP server tool. `validateName` accepts it; the policy must still strip it.
+  "mcp__fake__search",
+] as const
+
 const fixtureTools = Layer.effectDiscard(
   ToolRegistry.Service.use((registry) =>
-    registry.register({
-      read: Tool.make({
-        description: "Read a file",
-        input: Schema.Struct({ path: Schema.String }),
-        output: Schema.Struct({ text: Schema.String }),
-        execute: () => Effect.succeed({ text: "contents" }),
-      }),
-      write: Tool.make({
-        description: "Write a file",
-        input: Schema.Struct({ path: Schema.String }),
-        output: Schema.Struct({ ok: Schema.Boolean }),
-        execute: () => Effect.succeed({ ok: true }),
-      }),
-      bash: Tool.make({
-        description: "Run a command",
-        input: Schema.Struct({ command: Schema.String }),
-        output: Schema.Struct({ output: Schema.String }),
-        execute: () => Effect.succeed({ output: "" }),
-      }),
-    }),
+    registry.register(Object.fromEntries(FIXTURE_TOOL_NAMES.map((name) => [name, stub(`Fixture tool ${name}`)]))),
   ),
 )
 const fixtureNode = makeLocationNode({ name: "test/subagent-fixtures", layer: fixtureTools, deps: [ToolRegistry.node] })
@@ -194,6 +208,7 @@ const it = testEffect(
       ToolRegistry.node,
       ToolRegistry.toolsNode,
       fixtureNode,
+      SubagentEngine.node,
       SubagentTool.node,
       SessionRunnerModel.node,
       SystemContextRegistry.node,
@@ -207,6 +222,15 @@ const it = testEffect(
     ]),
     [...replacements, [SessionExecution.node, execution]],
   ),
+)
+
+// A real PermissionV2 graph, so the child ruleset can be asserted end to end instead of through the
+// inert stand-in the runner graph uses.
+const permissionIt = testEffect(
+  AppNodeBuilder.build(LayerNode.group([PermissionV2.node, SessionV2.node, AgentV2.node]), [
+    [SessionExecution.node, SessionExecution.noopLayer],
+    [Location.node, Location.boundNode({ directory: DIRECTORY })],
+  ]),
 )
 
 const textTurn = (id: string, text: string): Turn => [
@@ -234,6 +258,10 @@ const toolCallsTurn = (calls: ReadonlyArray<{ id: string; name: string; input: u
 
 const delegateTurn = (role: string, prompt: string): Turn =>
   toolTurn({ id: "call-subagent", name: "subagent", input: { action: "run", role, prompt } })
+
+/** One `subagent` call for a registry action. No child Session is created for these. */
+const actionTurn = (input: Record<string, unknown>): Turn =>
+  toolTurn({ id: "call-subagent", name: "subagent", input })
 
 const toolParts = (messages: ReadonlyArray<SessionMessage.Message>, name: string) => {
   const parts = messages.flatMap((message) => (message.type === "assistant" ? message.content : []))
@@ -268,8 +296,15 @@ const childOf = (sessions: SessionV2.Interface) =>
   Effect.gen(function* () {
     const children = (yield* sessions.list({ directory: DIRECTORY })).filter((session) => session.parentID === PARENT_ID)
     expect(children).toHaveLength(1)
-    return children[0]!
+    return children[0]
   })
+
+/** `_tag` of the typed failure a permission assertion produced, or a marker for the other outcomes. */
+const errorTag = (exit: Exit.Exit<void, PermissionV2.Error | SessionV2.NotFoundError>) => {
+  if (Exit.isSuccess(exit)) return "success"
+  const failure = Cause.findErrorOption(exit.cause)
+  return Option.isSome(failure) ? failure.value._tag : "defect"
+}
 
 /** Polls a predicate on the real clock until it holds or the budget runs out. */
 const waitFor = (predicate: Effect.Effect<boolean>, budgetMs = 10_000) =>
@@ -491,6 +526,275 @@ describe("subagent tool integration", () => {
         expect(advertised).toContain("read")
         expect(advertised).not.toContain("subagent")
       }
+    }),
+  )
+
+  it.live("gives a read-only role only the read-only tools its persona recommends", () =>
+    Effect.gen(function* () {
+      const sessions = yield* harness({
+        role: "researcher",
+        prompt: "Inspect the repository",
+        child: [textTurn("text-child", "Read-only report")],
+      })
+
+      yield* runParent(sessions)
+
+      const child = yield* childOf(sessions)
+      const advertised = (requestsBySession.get(child.id)?.[0]?.tools ?? []).map((tool) => tool.name).sort()
+      // The researcher persona recommends read/grep/glob/websearch/webfetch and nothing else. All of
+      // them are registered as fixtures, and so is every tool the policy must strip, so this list is
+      // the allowlist and nothing more.
+      expect(advertised).toEqual(["glob", "grep", "read", "webfetch", "websearch"])
+    }),
+  )
+
+  it.live("removes what the ruleset did not re-open, not what was never registered", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+
+      // Without a ruleset every fixture tool is advertised, so the list below is the real registry
+      // contents and the next assertion is about the ruleset alone.
+      const unrestricted = (yield* registry.materialize([])).definitions.map((definition) => definition.name)
+      for (const name of FIXTURE_TOOL_NAMES) expect(unrestricted).toContain(name)
+
+      // Real `ToolRegistry.materialize` / `whollyDisabled` / `findLast` on the real ruleset.
+      const researcherMaterialization = yield* registry.materialize(
+        SubagentTool.rulesFor("researcher", ["read", "grep", "glob", "websearch", "webfetch"]),
+      )
+      expect(researcherMaterialization.definitions.map((definition) => definition.name).sort()).toEqual([
+        "glob",
+        "grep",
+        "read",
+        "webfetch",
+        "websearch",
+      ])
+
+      // A writable role keeps its tools and only loses `subagent`.
+      const builderMaterialization = yield* registry.materialize(
+        SubagentTool.rulesFor("code_builder", ["read", "edit", "write", "bash"]),
+      )
+      const builder = builderMaterialization.definitions.map((definition) => definition.name)
+      expect(builder).not.toContain("subagent")
+      for (const name of ["bash", "computer", "edit", "mcp__fake__search", "read", "write"])
+        expect(builder).toContain(name)
+    }),
+  )
+
+  it.live("denies every tool to a child session resumed after its agent is gone", () =>
+    Effect.gen(function* () {
+      const sessions = yield* harness({
+        role: "researcher",
+        prompt: "Inspect the repository",
+        child: [textTurn("text-child", "Read-only report")],
+      })
+
+      yield* runParent(sessions)
+
+      const child = yield* childOf(sessions)
+      const agents = yield* AgentV2.Service
+      // The child agent is scoped to the run, so the tool returning has already disposed it.
+      expect(yield* agents.resolve(child.agent)).toBeUndefined()
+      expect(requestsBySession.get(child.id)?.length).toBe(1)
+
+      childTurns = [textTurn("text-resume", "I have nothing to work with")]
+      yield* sessions.prompt({ sessionID: child.id, prompt: { text: "Continue" }, resume: false })
+      yield* sessions.resume(child.id)
+
+      const resumed = requestsBySession.get(child.id) ?? []
+      expect(resumed.length).toBe(2)
+      // Without the runner's fail-closed path this would advertise every fixture tool, including
+      // `subagent`, which never consults PermissionV2 and would have spawned a grandchild.
+      expect(resumed[1]?.tools ?? []).toEqual([])
+    }),
+  )
+
+  it.live("lists the missions registered for the project", () =>
+    Effect.gen(function* () {
+      const sessions = yield* harness({ role: "researcher", prompt: "unused", child: [] })
+      const engine = yield* SubagentEngine.Service
+      yield* engine.createTask({ role: "code_reviewer", prompt: "Audit the diff" })
+      parentTurns = [actionTurn({ action: "list" }), textTurn("text-parent", "Done")]
+
+      yield* runParent(sessions)
+
+      const text = toolText(yield* sessions.context(PARENT_ID), "subagent") ?? ""
+      expect(text).toContain("Missions enregistrées (1)")
+      expect(text).toContain("code_reviewer")
+    }),
+  )
+
+  it.live("reports a mission by id and refuses an unknown one", () =>
+    Effect.gen(function* () {
+      const sessions = yield* harness({ role: "researcher", prompt: "unused", child: [] })
+      const engine = yield* SubagentEngine.Service
+      const task = yield* engine.createTask({ role: "tester", prompt: "Write the regression test" })
+
+      parentTurns = [
+        actionTurn({ action: "status", task_id: task.id }),
+        actionTurn({ action: "status", task_id: "missing-task" }),
+        textTurn("text-parent", "Done"),
+      ]
+      yield* runParent(sessions)
+
+      const parts = toolParts(yield* sessions.context(PARENT_ID), "subagent")
+      expect(parts).toHaveLength(2)
+      const [found, missing] = parts
+      expect(found?.state.status === "completed" ? found.state.structured["text"] : "").toContain(
+        `<subagent id="${task.id}" role="tester" state="registered">`,
+      )
+      expect(found?.state.status === "completed" ? found.state.structured["status"] : "").toBe("registered")
+      expect(missing?.state.status === "completed" ? missing.state.structured["text"] : "").toContain(
+        "Mission introuvable pour l'id : missing-task",
+      )
+    }),
+  )
+
+  it.live("shows the journal of a mission", () =>
+    Effect.gen(function* () {
+      const sessions = yield* harness({ role: "researcher", prompt: "unused", child: [] })
+      const engine = yield* SubagentEngine.Service
+      const task = yield* engine.createTask({ role: "outliner", prompt: "Plan the refactor" })
+      yield* engine.appendLog(task.id, "Step 1: reading the roadmap")
+      parentTurns = [actionTurn({ action: "logs", task_id: task.id }), textTurn("text-parent", "Done")]
+
+      yield* runParent(sessions)
+
+      const text = toolText(yield* sessions.context(PARENT_ID), "subagent") ?? ""
+      expect(text).toContain(`### Journal de la mission [${task.id}] (outliner)`)
+      expect(text).toContain("Mission enregistrée pour le rôle [outliner]")
+      expect(text).toContain("Step 1: reading the roadmap")
+    }),
+  )
+
+  it.live("cancels a mission and marks it cancelled", () =>
+    Effect.gen(function* () {
+      const sessions = yield* harness({ role: "researcher", prompt: "unused", child: [] })
+      const engine = yield* SubagentEngine.Service
+      const task = yield* engine.createTask({ role: "critic", prompt: "Critique the design" })
+      parentTurns = [actionTurn({ action: "cancel", task_id: task.id }), textTurn("text-parent", "Done")]
+
+      yield* runParent(sessions)
+
+      const messages = yield* sessions.context(PARENT_ID)
+      expect(toolStructured(messages, "subagent")?.["status"]).toBe("cancelled")
+      expect(toolText(messages, "subagent")).toContain(`Mission ${task.id} annulée`)
+      expect(engine.getTask(task.id)?.status).toBe("cancelled")
+    }),
+  )
+
+  it.live("resets a failed mission back to registered", () =>
+    Effect.gen(function* () {
+      const sessions = yield* harness({ role: "researcher", prompt: "unused", child: [] })
+      const engine = yield* SubagentEngine.Service
+      const task = yield* engine.createTask({ role: "tester", prompt: "Run the suite" })
+      yield* engine.failTask(task.id, "boom")
+      parentTurns = [actionTurn({ action: "retry", task_id: task.id }), textTurn("text-parent", "Done")]
+
+      yield* runParent(sessions)
+
+      const messages = yield* sessions.context(PARENT_ID)
+      expect(toolStructured(messages, "subagent")?.["status"]).toBe("registered")
+      expect(toolText(messages, "subagent")).toContain("réinitialisée à l'état registered")
+      expect(engine.getTask(task.id)?.status).toBe("registered")
+      expect(engine.getTask(task.id)?.error).toBeUndefined()
+    }),
+  )
+
+  it.live("records a steering directive for a mission", () =>
+    Effect.gen(function* () {
+      const sessions = yield* harness({ role: "researcher", prompt: "unused", child: [] })
+      const engine = yield* SubagentEngine.Service
+      const task = yield* engine.createTask({ role: "brainstormer", prompt: "Explore options" })
+      parentTurns = [
+        actionTurn({ action: "steer", task_id: task.id, directive: "Focus on the SQLite path" }),
+        textTurn("text-parent", "Done"),
+      ]
+
+      yield* runParent(sessions)
+
+      expect(toolText(yield* sessions.context(PARENT_ID), "subagent")).toContain("Directive enregistrée")
+      expect(engine.getTask(task.id)?.pendingDirectives).toContain("Focus on the SQLite path")
+    }),
+  )
+
+  it.live("asks for a task_id instead of guessing when the action needs one", () =>
+    Effect.gen(function* () {
+      const sessions = yield* harness({
+        role: "researcher",
+        prompt: "unused",
+        child: [],
+        parentHead: toolCallsTurn([
+          { id: "call-status", name: "subagent", input: { action: "status" } },
+          { id: "call-logs", name: "subagent", input: { action: "logs" } },
+          { id: "call-retry", name: "subagent", input: { action: "retry" } },
+          { id: "call-cancel", name: "subagent", input: { action: "cancel" } },
+          { id: "call-steer", name: "subagent", input: { action: "steer" } },
+        ]),
+      })
+
+      yield* runParent(sessions)
+
+      const parts = toolParts(yield* sessions.context(PARENT_ID), "subagent")
+      expect(parts).toHaveLength(5)
+      for (const part of parts) {
+        const text = part.state.status === "completed" ? part.state.structured["text"] : undefined
+        expect(String(text)).toContain("requis")
+      }
+    }),
+  )
+})
+
+describe("subagent child permissions at runtime", () => {
+  permissionIt.live("allows the child's own read tool and blocks every other action", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionV2.Service
+      const agents = yield* AgentV2.Service
+      const permission = yield* PermissionV2.Service
+      const agentID = AgentV2.ID.make("subagent-researcher-test")
+
+      yield* agents.transform((draft) => {
+        draft.update(agentID, (agent) => {
+          agent.mode = "subagent"
+          agent.permissions = SubagentTool.rulesFor("researcher", ["read", "grep", "glob"])
+        })
+      })
+
+      const parent = yield* sessions.create({ location: LOCATION })
+      const child = yield* sessions.create({ location: LOCATION, agent: agentID, parentID: parent.id })
+      const assert = (action: string, resource: string) =>
+        permission.assert({ sessionID: child.id, action, resources: [resource] }).pipe(Effect.exit)
+
+      expect(errorTag(yield* assert("read", "src/session.ts"))).toBe("success")
+      expect(errorTag(yield* assert("grep", "TODO"))).toBe("success")
+      expect(errorTag(yield* assert("glob", "**/*.ts"))).toBe("success")
+      for (const [action, resource] of [
+        ["write", "src/session.ts"],
+        ["bash", "rm -rf /"],
+        ["computer", "*"],
+        ["mcp__fake__search", "*"],
+        ["subagent", "*"],
+        ["external_directory", "/etc/passwd"],
+      ] as const)
+        expect(errorTag(yield* assert(action, resource))).toBe("PermissionV2.BlockedError")
+    }),
+  )
+
+  permissionIt.live("blocks a session pinned to an agent that no longer exists", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionV2.Service
+      const permission = yield* PermissionV2.Service
+      const location = LOCATION
+      const parent = yield* sessions.create({ location })
+      const orphan = yield* sessions.create({
+        location,
+        agent: AgentV2.ID.make("subagent-researcher-ghost"),
+        parentID: parent.id,
+      })
+
+      for (const action of ["read", "write", "bash", "subagent"])
+        expect(
+          errorTag(yield* permission.assert({ sessionID: orphan.id, action, resources: ["*"] }).pipe(Effect.exit)),
+        ).toBe("PermissionV2.BlockedError")
     }),
   )
 })

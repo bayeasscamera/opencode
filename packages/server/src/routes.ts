@@ -7,6 +7,7 @@ import { Credential } from "@opencode-ai/core/credential"
 import { PermissionSaved } from "@opencode-ai/core/permission/saved"
 import { PtyTicket } from "@opencode-ai/core/pty/ticket"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { SubagentRuntime } from "@opencode-ai/core/subagent/runtime"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { LocationServiceMap } from "@opencode-ai/core/location-service-map"
 import { SessionExecutionLocal } from "@opencode-ai/core/session/execution/local"
@@ -49,7 +50,12 @@ export function createEmbeddedRoutes() {
 }
 
 function makeRoutes<AuthError, AuthServices>(auth: Layer.Layer<ServerAuth.Config, AuthError, AuthServices>) {
-  const serviceLayer = AppNodeBuilder.build(applicationServices, [[SessionExecution.node, SessionExecutionLocal.node]])
+  // This server builds its own SessionV2, so it must publish it too. Without this the subagent tool
+  // reports "moteur de session non disponible" for `opencode serve` and for the TUI, which reaches
+  // this server through the daemon. See @opencode-ai/core/subagent/runtime.
+  const serviceLayer = SubagentRuntime.publishing(
+    AppNodeBuilder.build(applicationServices, [[SessionExecution.node, SessionExecutionLocal.node]]),
+  )
 
   return HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
     Layer.provide(handlers),

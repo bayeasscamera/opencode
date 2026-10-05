@@ -3,9 +3,11 @@ import { Effect } from "effect"
 import os from "os"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { Location } from "@opencode-ai/core/location"
+import { PermissionV2 } from "@opencode-ai/core/permission"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
+import { SubagentRuntime } from "@opencode-ai/core/subagent/runtime"
 import { SubagentTool } from "@opencode-ai/core/tool/subagent"
 import { SubagentEngine } from "../src/subagent"
 import { tmpdir } from "./fixture/tmpdir"
@@ -16,6 +18,14 @@ const layer = () =>
 
 const provide = <A, E>(effect: Effect.Effect<A, E, SubagentEngine.Service>) =>
   Effect.runPromise(effect.pipe(Effect.provide(layer())))
+
+// The real production wiring: a server wraps the layer that owns `SessionV2.node` in
+// `SubagentRuntime.publishing`, so building it is what publishes the instance.
+const publishedSession = testEffect(
+  SubagentRuntime.publishing(
+    AppNodeBuilder.build(SessionV2.node, [[SessionExecution.node, SessionExecution.noopLayer]]),
+  ),
+)
 
 describe("SubagentEngine", () => {
   test("resolves subagent personas", async () => {
@@ -163,21 +173,100 @@ describe("SubagentEngine", () => {
 })
 
 describe("subagent permission rules", () => {
-  test("always forbids nested subagents", () => {
-    expect(SubagentTool.rulesFor("code_builder")).toEqual([{ action: "subagent", resource: "*", effect: "deny" }])
+  const RESEARCHER_TOOLS = ["read", "grep", "glob", "websearch", "webfetch"]
+
+  test("allowlists a read-only role instead of denylisting it", () => {
+    expect(SubagentTool.rulesFor("researcher", RESEARCHER_TOOLS)).toEqual([
+      { action: "*", resource: "*", effect: "deny" },
+      { action: "read", resource: "*", effect: "allow" },
+      { action: "grep", resource: "*", effect: "allow" },
+      { action: "glob", resource: "*", effect: "allow" },
+      { action: "websearch", resource: "*", effect: "allow" },
+      { action: "webfetch", resource: "*", effect: "allow" },
+      { action: "subagent", resource: "*", effect: "deny" },
+    ])
   })
 
-  test("denies write, edit, apply_patch and bash for read-only roles", () => {
-    const rules = SubagentTool.rulesFor("researcher")
-    expect(rules.map((rule) => rule.action)).toEqual(["subagent", "write", "edit", "apply_patch", "bash"])
-    expect(rules.every((rule) => rule.effect === "deny" && rule.resource === "*")).toBe(true)
+  test("strips a mutating tool even when a read-only persona lists it", () => {
+    const rules = SubagentTool.rulesFor("researcher", [
+      "read",
+      "bash",
+      "write",
+      "edit",
+      "apply_patch",
+      "computer",
+      "mcp_store",
+      "mod",
+      "schedule",
+    ])
+    expect(rules.filter((rule) => rule.effect === "allow").map((rule) => rule.action)).toEqual(["read"])
+  })
+
+  test("always forbids nested subagents, for every role", () => {
+    expect(SubagentTool.rulesFor("code_builder", ["read", "write", "bash"])).toEqual([
+      { action: "subagent", resource: "*", effect: "deny" },
+    ])
+    for (const role of ["researcher", "code_reviewer", "brainstormer", "critic", "outliner", "general", "tester"]) {
+      expect(SubagentTool.rulesFor(role, RESEARCHER_TOOLS).at(-1)).toEqual({
+        action: "subagent",
+        resource: "*",
+        effect: "deny",
+      })
+    }
   })
 
   test("keeps a builder role able to write and run commands", () => {
-    const denied = SubagentTool.rulesFor("code_builder").map((rule) => rule.action)
+    const denied = SubagentTool.rulesFor("code_builder", ["read", "write", "bash"]).map((rule) => rule.action)
     expect(denied).not.toContain("write")
     expect(denied).not.toContain("bash")
   })
+})
+
+describe("subagent ruleset resolution", () => {
+  // The ruleset is resolved by `findLast` in two places: `ToolRegistry.whollyDisabled` picks the
+  // advertised tools and `PermissionV2.evaluate` picks the runtime effect. Both must agree.
+  const rules = SubagentTool.rulesFor("researcher", ["read", "grep", "glob", "websearch", "webfetch"])
+
+  test("PermissionV2.evaluate lets a later allow beat the leading deny-all", () => {
+    expect(PermissionV2.evaluate("read", "src/session.ts", rules).effect).toBe("allow")
+    expect(PermissionV2.evaluate("grep", "TODO", rules).effect).toBe("allow")
+    expect(PermissionV2.evaluate("glob", "**/*.ts", rules).effect).toBe("allow")
+    expect(PermissionV2.evaluate("websearch", "effect 4", rules).effect).toBe("allow")
+    expect(PermissionV2.evaluate("webfetch", "https://example.com", rules).effect).toBe("allow")
+  })
+
+  test("PermissionV2.evaluate denies everything the allowlist did not re-open", () => {
+    for (const action of ["write", "edit", "apply_patch", "bash", "computer", "browser", "mod", "schedule", "mcp_store", "mcp__fake__search", "subagent"])
+      expect(PermissionV2.evaluate(action, "*", rules).effect).toBe("deny")
+  })
+
+  test("denies the internal external_directory permission so a child stays inside its Location", () => {
+    // `read`, `grep` and `glob` assert this action for paths outside the Location. The allowlist
+    // does not re-open it, so a read-only child cannot escape its workspace.
+    expect(PermissionV2.evaluate("external_directory", "/etc/*", rules).effect).toBe("deny")
+  })
+})
+
+describe("orphaned agent permissions", () => {
+  test("deniedByDefault denies every action, resource and the subagent tool", () => {
+    expect(PermissionV2.deniedByDefault).toEqual([{ action: "*", resource: "*", effect: "deny" }])
+    for (const action of ["read", "grep", "glob", "write", "bash", "subagent", "computer", "external_directory"])
+      expect(PermissionV2.evaluate(action, "*", PermissionV2.deniedByDefault).effect).toBe("deny")
+  })
+})
+
+describe("subagent runtime publication", () => {
+  test("sessions() is undefined until a server publishes", () => {
+    SubagentRuntime.reset()
+    expect(SubagentRuntime.sessions()).toBeUndefined()
+  })
+
+  publishedSession.live("publishing exposes the exact SessionV2 instance it built", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionV2.Service
+      expect(SubagentRuntime.sessions()).toBe(sessions)
+    }).pipe(Effect.ensuring(Effect.sync(() => SubagentRuntime.reset()))),
+  )
 })
 
 // Session creation never needs live execution, so the noop execution layer is enough.

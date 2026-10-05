@@ -297,13 +297,13 @@ export function createRoutes(
     Layer.provide(locationLayer),
     Layer.provide(PtyEnvironment.layer),
     Layer.provide(
-      AppNodeBuilderV1.build(SessionV2.node, [
-        [LocationServiceMap.node, locationServiceMapV2],
-        [SessionExecution.node, SessionExecutionLocal.node],
-      ]).pipe(
-        // Publish the single built SessionV2 instance for Location-scoped consumers such as the
-        // subagent tool, which cannot depend on SessionV2.node (see @opencode-ai/core/subagent/runtime).
-        Layer.tap((context) => Effect.sync(() => SubagentRuntime.set(Context.get(context, SessionV2.Service)))),
+      // Publish the single built SessionV2 instance for Location-scoped consumers such as the
+      // subagent tool, which cannot depend on SessionV2.node (see @opencode-ai/core/subagent/runtime).
+      SubagentRuntime.publishing(
+        AppNodeBuilderV1.build(SessionV2.node, [
+          [LocationServiceMap.node, locationServiceMapV2],
+          [SessionExecution.node, SessionExecutionLocal.node],
+        ]),
       ),
     ),
     Layer.provide(locationServiceMapV2),

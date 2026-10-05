@@ -12,7 +12,13 @@ import { Wildcard } from "./util/wildcard"
 import { PermissionSaved } from "./permission/saved"
 
 export { Effect, Rule, Ruleset } from "@opencode-ai/schema/permission"
-const missingAgentPermissions: Permission.Ruleset = [{ action: "*", resource: "*", effect: "deny" }]
+/**
+ * Ruleset used when a Session names an agent that no longer resolves. Denying everything is the
+ * only safe answer: an unresolvable agent must not inherit the parent's or the default's rights.
+ * Ephemeral subagent agents are scoped to their run, so a child Session resumed after its run
+ * ends resolves to nothing and lands here.
+ */
+export const deniedByDefault: Permission.Ruleset = [{ action: "*", resource: "*", effect: "deny" }]
 
 export const ID = Permission.ID
 export type ID = typeof ID.Type
@@ -141,7 +147,7 @@ const layer = Layer.effect(
       const session = yield* sessions.get(sessionID)
       if (!session) return yield* new SessionV2.NotFoundError({ sessionID })
       const agent = yield* agents.resolve(agentID ?? session.agent)
-      return agent?.permissions ?? missingAgentPermissions
+      return agent?.permissions ?? deniedByDefault
     })
 
     function denied(input: AssertInput, rules: Permission.Ruleset) {
