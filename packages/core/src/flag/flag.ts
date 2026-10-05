@@ -75,4 +75,10 @@ export const Flag = {
   get OPENCODE_CLIENT() {
     return process.env["OPENCODE_CLIENT"] ?? "cli"
   },
+  // Extra skill directories that are always registered, as a list separated by
+  // the platform path delimiter. Kept in the environment so a checkout never
+  // carries machine-specific paths.
+  get OPENCODE_SKILL_DIRECTORIES() {
+    return process.env["OPENCODE_SKILL_DIRECTORIES"]
+  },
 }
