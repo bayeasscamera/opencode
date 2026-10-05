@@ -33,12 +33,26 @@ const cliServe = Effect.gen(function* () {
 /** The desktop sidecar imports `virtual:opencode-server` -> `src/node.ts` -> `Server.listen`. */
 const desktopSidecar = Effect.gen(function* () {
   SubagentRuntime.reset()
+  // `Server.listen` takes no credentials. `prepareSidecarEnv` in
+  // `packages/desktop/src/main/sidecar.ts` puts them in the environment before the
+  // server starts, and `ServerAuth` reads them from there.
+  const previousUsername = process.env["OPENCODE_SERVER_USERNAME"]
+  const previousPassword = process.env["OPENCODE_SERVER_PASSWORD"]
+  process.env["OPENCODE_SERVER_USERNAME"] = "opencode"
+  process.env["OPENCODE_SERVER_PASSWORD"] = "publication-probe"
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      if (previousUsername === undefined) delete process.env["OPENCODE_SERVER_USERNAME"]
+      else process.env["OPENCODE_SERVER_USERNAME"] = previousUsername
+      if (previousPassword === undefined) delete process.env["OPENCODE_SERVER_PASSWORD"]
+      else process.env["OPENCODE_SERVER_PASSWORD"] = previousPassword
+    }),
+  )
+
   const listener = yield* Effect.promise(() =>
     Server.listen({
       port: 0,
       hostname: "127.0.0.1",
-      username: "opencode",
-      password: "publication-probe",
       cors: ["oc://renderer"],
       mdns: false,
     }),
