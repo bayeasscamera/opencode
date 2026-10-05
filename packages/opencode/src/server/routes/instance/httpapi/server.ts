@@ -64,6 +64,7 @@ import { PtyTicket } from "@opencode-ai/core/pty/ticket"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { SubagentRuntime } from "@opencode-ai/core/subagent/runtime"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
 import { lazy } from "@/util/lazy"
@@ -299,7 +300,11 @@ export function createRoutes(
       AppNodeBuilderV1.build(SessionV2.node, [
         [LocationServiceMap.node, locationServiceMapV2],
         [SessionExecution.node, SessionExecutionLocal.node],
-      ]),
+      ]).pipe(
+        // Publish the single built SessionV2 instance for Location-scoped consumers such as the
+        // subagent tool, which cannot depend on SessionV2.node (see @opencode-ai/core/subagent/runtime).
+        Layer.tap((context) => Effect.sync(() => SubagentRuntime.set(Context.get(context, SessionV2.Service)))),
+      ),
     ),
     Layer.provide(locationServiceMapV2),
 

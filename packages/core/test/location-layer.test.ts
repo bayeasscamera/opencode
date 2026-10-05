@@ -101,40 +101,40 @@ describe("LocationServiceMap", () => {
               ),
             )
 
+          const builtInTools = [
+            "application_context",
+            "apply_patch",
+            "bash",
+            "browser",
+            "computer",
+            "edit",
+            "glob",
+            "grep",
+            "mcp_store",
+            "memory_list",
+            "memory_recall",
+            "memory_record",
+            "memory_reflect",
+            "mod",
+            "observer",
+            "question",
+            "read",
+            "read_image",
+            "read_pdf",
+            "schedule",
+            "skill",
+            "subagent",
+            "todowrite",
+            "webfetch",
+            "websearch",
+            "write",
+          ]
           const blockedState = yield* update(blocked.path)
           expect(blockedState.providers.some((provider) => provider.id === ProviderV2.ID.make("test"))).toBe(false)
-          expect(blockedState.tools.map((tool) => tool.name).sort()).toEqual([
-            "application_context",
-            "apply_patch",
-            "bash",
-            "edit",
-            "glob",
-            "grep",
-            "question",
-            "read",
-            "skill",
-            "todowrite",
-            "webfetch",
-            "websearch",
-            "write",
-          ])
+          expect(blockedState.tools.map((tool) => tool.name).sort()).toEqual(builtInTools)
           const allowedState = yield* update(allowed.path)
           expect(allowedState.providers.some((provider) => provider.id === ProviderV2.ID.make("test"))).toBe(true)
-          expect(allowedState.tools.map((tool) => tool.name).sort()).toEqual([
-            "application_context",
-            "apply_patch",
-            "bash",
-            "edit",
-            "glob",
-            "grep",
-            "question",
-            "read",
-            "skill",
-            "todowrite",
-            "webfetch",
-            "websearch",
-            "write",
-          ])
+          expect(allowedState.tools.map((tool) => tool.name).sort()).toEqual(builtInTools)
         }),
       ),
     ),
