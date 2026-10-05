@@ -1,7 +1,9 @@
 export * as ComputerTool from "./computer"
 
+import { ToolFailure } from "@opencode-ai/llm"
 import { Effect, Layer, Schema } from "effect"
 import { makeLocationNode } from "../effect/app-node"
+import { PermissionV2 } from "../permission"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -41,6 +43,27 @@ export const Output = Schema.Struct({
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const tools = yield* Tools.Service
+    const permission = yield* PermissionV2.Service
+
+    /**
+     * Computer use drives the real desktop: `screenshot` only observes it, while `click`, `type` and
+     * `key_combo` act on whatever window currently has focus. The action is the resource, so a caller
+     * can allow observation without also allowing input.
+     */
+    const guarded = <A>(input: typeof Input.Type, context: Tool.Context, run: () => Promise<A>) =>
+      permission
+        .assert({
+          action: name,
+          resources: [input.action],
+          save: [input.action],
+          sessionID: context.sessionID,
+          agent: context.agent,
+          source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+        })
+        .pipe(
+          Effect.mapError(() => new ToolFailure({ message: `Permission denied: ${name}` })),
+          Effect.andThen(Effect.promise(run)),
+        )
 
     yield* tools
       .register({
@@ -50,8 +73,16 @@ const layer = Layer.effectDiscard(
           input: Input,
           output: Output,
           toModelOutput: ({ output }) => [{ type: "text", text: output.text }],
-          execute: (input) =>
-            Effect.promise(async () => {
+          execute: (input, context) =>
+            guarded(input, context, async () => {
+              if (process.env.OPENCODE_BACKGROUND_WORKER === "true") {
+                if (input.action !== "screenshot") {
+                  return {
+                    text: `[Sécurité Confinement] L'action '${input.action}' de l'outil computer est strictement interdite pour les agents ou processus s'exécutant en arrière-plan afin d'éviter le détournement d'interface utilisateur.`,
+                  }
+                }
+              }
+
               const isMac = process.platform === "darwin"
 
               if (input.action === "screenshot") {
@@ -113,5 +144,5 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/computer",
   layer,
-  deps: [ToolRegistry.node],
+  deps: [ToolRegistry.node, PermissionV2.node],
 })

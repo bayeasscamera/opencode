@@ -1,7 +1,10 @@
 export * as ReadPdfTool from "./read-pdf"
 
+import { ToolFailure } from "@opencode-ai/llm"
 import { Effect, Layer, Schema } from "effect"
 import { makeLocationNode } from "../effect/app-node"
+import { LocationMutation } from "../location-mutation"
+import { PermissionV2 } from "../permission"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -31,6 +34,27 @@ export const Output = Schema.Struct({
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const tools = yield* Tools.Service
+    const mutation = yield* LocationMutation.Service
+    const permission = yield* PermissionV2.Service
+
+    /**
+     * The tool accepts an arbitrary path, so without this a caller could extract text from a PDF
+     * anywhere on the machine. External paths require the same `external_directory` approval the
+     * `read` tool asks for, and the read then uses the canonical path that was approved.
+     */
+    const guarded = <A>(input: typeof Input.Type, context: Tool.Context, run: (path: string) => Promise<A>) =>
+      Effect.gen(function* () {
+        const target = yield* mutation.resolve({ path: input.path, kind: "file" })
+        const external = target.externalDirectory
+        if (external)
+          yield* permission.assert({
+            ...LocationMutation.externalDirectoryPermission(external),
+            sessionID: context.sessionID,
+            agent: context.agent,
+            source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+          })
+        return yield* Effect.promise(() => run(target.canonical))
+      }).pipe(Effect.mapError(() => new ToolFailure({ message: `Unable to read PDF: ${input.path}` })))
 
     yield* tools
       .register({
@@ -40,9 +64,8 @@ const layer = Layer.effectDiscard(
           input: Input,
           output: Output,
           toModelOutput: ({ output }) => [{ type: "text", text: output.text }],
-          execute: (input) =>
-            Effect.promise(async () => {
-              const filePath = input.path
+          execute: (input, context) =>
+            guarded(input, context, async (filePath) => {
               const maxPages = input.max_pages ?? 0
 
               if (!fs.existsSync(filePath)) {
@@ -122,5 +145,5 @@ except ImportError:
 export const node = makeLocationNode({
   name: "tool/read-pdf",
   layer,
-  deps: [ToolRegistry.node],
+  deps: [ToolRegistry.node, LocationMutation.node, PermissionV2.node],
 })

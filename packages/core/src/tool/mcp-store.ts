@@ -1,8 +1,10 @@
 export * as McpStoreTool from "./mcp-store"
 
+import { ToolFailure } from "@opencode-ai/llm"
 import { Effect, Layer, Schema } from "effect"
 import { makeLocationNode } from "../effect/app-node"
 import { CATALOG, findById, listByCategory, type McpStoreEntry } from "../mcp-store/catalog"
+import { PermissionV2 } from "../permission"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -41,6 +43,7 @@ ${entry.description}
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const tools = yield* Tools.Service
+    const permission = yield* PermissionV2.Service
 
     yield* tools
       .register({
@@ -50,8 +53,19 @@ const layer = Layer.effectDiscard(
           input: Input,
           output: Output,
           toModelOutput: ({ output }) => [{ type: "text", text: output.text }],
-          execute: (input) =>
+          execute: (input, context) =>
             Effect.gen(function* () {
+              // Browsing the catalogue is harmless on its own, but the tool's output is a ready-made
+              // MCP configuration that a caller can paste into opencode.json. Approving the read
+              // keeps that recommendation flow visible to the user.
+              yield* permission.assert({
+                action: name,
+                resources: ["*"],
+                save: ["*"],
+                sessionID: context.sessionID,
+                agent: context.agent,
+                source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+              }).pipe(Effect.mapError(() => new ToolFailure({ message: `Permission denied: ${name}` })))
               if (input.action === "info") {
                 if (!input.id) {
                   return { text: "Erreur: 'id' est requis pour l'action 'info'." }
@@ -80,5 +94,5 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/mcp-store",
   layer,
-  deps: [ToolRegistry.node],
+  deps: [ToolRegistry.node, PermissionV2.node],
 })

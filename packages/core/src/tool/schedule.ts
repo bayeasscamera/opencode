@@ -1,9 +1,11 @@
 export * as ScheduleTool from "./schedule"
 
+import { ToolFailure } from "@opencode-ai/llm"
 import { Effect, Layer, Schema } from "effect"
 import { makeLocationNode } from "../effect/app-node"
 import { Schedule } from "../schedule/schedule"
 import { Location } from "../location"
+import { PermissionV2 } from "../permission"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -40,6 +42,7 @@ const layer = Layer.effectDiscard(
     const tools = yield* Tools.Service
     const schedule = yield* Schedule.Service
     const location = yield* Location.Service
+    const permission = yield* PermissionV2.Service
 
     yield* tools
       .register({
@@ -48,8 +51,18 @@ const layer = Layer.effectDiscard(
           input: Input,
           output: Output,
           toModelOutput: ({ output }) => [{ type: "text", text: output.text }],
-          execute: (input) =>
+          execute: (input, context) =>
             Effect.gen(function* () {
+              // A scheduled task runs later, unattended, with whatever rights the runner has. Creating
+              // one is therefore a durable grant of authority, not a scratch operation.
+              yield* permission.assert({
+                action: name,
+                resources: [input.action],
+                save: [input.action],
+                sessionID: context.sessionID,
+                agent: context.agent,
+                source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+              }).pipe(Effect.mapError(() => new ToolFailure({ message: `Permission denied: ${name}` })))
               const projectID = location.project.id
 
               if (input.action === "create") {
@@ -112,5 +125,5 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/schedule",
   layer,
-  deps: [ToolRegistry.node, Schedule.node, Location.node],
+  deps: [ToolRegistry.node, Schedule.node, Location.node, PermissionV2.node],
 })

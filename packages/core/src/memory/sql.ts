@@ -9,6 +9,9 @@ export type MemoryKind =
   | "error_pattern"   // recurring errors and how they were fixed
   | "project_context" // key facts about the project
   | "user_preference" // observed coding preferences
+  | "episodic"        // past interaction episodes, tool run outcomes, self-healing events
+  | "procedural"      // repeatable recipes, build/test procedures, workflows
+  | "semantic"        // domain definitions, architectural rules and contracts
 
 export type MemoryID = string & { readonly _tag: "MemoryID" }
 

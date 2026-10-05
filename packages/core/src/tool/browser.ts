@@ -4,6 +4,7 @@ import { ToolFailure } from "@opencode-ai/llm"
 import { Duration, Effect, Layer, Schema } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { makeLocationNode } from "../effect/app-node"
+import { PermissionV2 } from "../permission"
 import { AppProcess } from "../process"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
@@ -116,6 +117,7 @@ const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const tools = yield* Tools.Service
     const appProcess = yield* AppProcess.Service
+    const permission = yield* PermissionV2.Service
 
     // Machine capability, cached per Location layer instance (undefined = unchecked).
     let runnerCache: string | null | undefined = undefined
@@ -157,8 +159,19 @@ const layer = Layer.effectDiscard(
           input: Input,
           output: Output,
           toModelOutput: ({ output }) => [{ type: "text", text: output.text }],
-          execute: (input) =>
+          execute: (input, context) =>
             Effect.gen(function* () {
+              // The browser drives an external process and reaches the network. `evaluate` runs
+              // arbitrary JavaScript, so the action is the resource: a caller can allow reading a
+              // page without also allowing script execution in it.
+              yield* permission.assert({
+                action: name,
+                resources: [input.action],
+                save: [input.action],
+                sessionID: context.sessionID,
+                agent: context.agent,
+                source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+              }).pipe(Effect.mapError(() => new ToolFailure({ message: `Permission denied: ${name}` })))
               if (input.action === "navigate") {
                 if (!input.url) return { text: "Erreur : 'url' requis pour l'action 'navigate'." }
                 if (!isHttpUrl(input.url)) return { text: "Erreur : 'url' doit être une URL http(s)." }
@@ -266,5 +279,5 @@ function parsePlaywrightOutput(
 export const node = makeLocationNode({
   name: "tool/browser",
   layer,
-  deps: [ToolRegistry.node, AppProcess.node],
+  deps: [ToolRegistry.node, AppProcess.node, PermissionV2.node],
 })

@@ -75,6 +75,9 @@ function render(entries: MemorySnapshot): string {
     error_pattern: "Patterns d'erreurs récurrents",
     project_context: "Contexte du projet",
     user_preference: "Préférences détectées",
+    episodic: "Épisodes d'exécution & Expérience",
+    procedural: "Procédures & Recettes",
+    semantic: "Contrats & Architecture",
   }
 
   const byKind: Record<string, string[]> = {}
