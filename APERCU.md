@@ -1,6 +1,6 @@
 # Aperçu — OpenCode Asse (application desktop)
 
-> Document de travail. Faits vérifiés dans le code au 05/10/2026.
+> Document de travail. Faits vérifiés dans le code au 06/10/2026.
 > Aucun secret n'y figure. Les points non vérifiés sont marqués « à confirmer ».
 
 ---
@@ -156,7 +156,7 @@ Cibles vérifiées dans `electron-builder.config.ts` (les quatre canaux `dev`, `
 
 | Script | Drapeau | `target` déclaré | Artefacts |
 |---|---|---|---|
-| `package:mac` | `--mac` | `mac.target: ["dmg"]` | `.dmg` |
+| `package:mac` | `--mac` | `mac.target: ["dmg", "zip"]` | `.dmg` + `.zip` |
 | `package:linux` | `--linux` | `linux.target: ["AppImage", "deb", "rpm"]` | AppImage, `.deb`, `.rpm` |
 | `package:win` | `--win` | `win.target: ["nsis"]` | installateur NSIS |
 
@@ -166,20 +166,22 @@ Deux pièges à connaître :
   sans `bun run build` préalable empaquette un `out/` absent ou périmé. C'est `build` qui déclenche
   `prebuild` (icônes, CLI, moteur).
 - **Pas de compilation croisée.** Chaque cible ne se construit que sur son propre OS, et `--mac` ne
-  produit que l'architecture de la machine hôte. Il n'y a plus de cible `zip` à côté du `dmg`.
+  produit que l'architecture de la machine hôte. Une cible `zip` accompagne à nouveau le `dmg`.
 
 Le canal ne change ni les cibles ni la signature : il ne modifie que l'identifiant d'application, le
 nom du produit, le protocole (`opencode` / `opencode-asse`) et la publication.
 
 ## 8. Problèmes connus
 
-- **Signature macOS désactivée** (`hardenedRuntime`, `notarize`, signature DMG : tous à `false`).
-  L'app n'est pas notarisée : macOS affichera un avertissement à l'installation. Volontaire pour un
-  build local, bloquant pour une distribution publique.
+- **Signature macOS rétablie** (`hardenedRuntime: true`, `notarize: true`, `dmg.sign: true` —
+  commit `4bfea6eba7`). La distribution publique reste soumise à la validité des certificats
+  présents sur la machine de build.
 - **Le sidecar V1 dépend de `../opencode/dist/node`** : le build desktop échoue si le moteur n'a pas
   été compilé au préalable (le script `prebuild` s'en charge).
-- **`packages/app` épingle un client vendorisé** (`opencode-ai-client-1.17.13-v2.tgz`) au lieu du
-  workspace. Risque de décalage entre l'interface et le moteur.
+- **Client vendorisé : migration en cours.** `packages/session-ui` est passé au workspace
+  (`workspace:*`) et `packages/client` expose un sous-chemin `@opencode-ai/client/promise` pour la
+  surface legacy. `packages/app` épingle encore le tarball
+  `vendor/opencode-ai-client-1.17.13-v2.tgz` (`packages/app/package.json`). Non commité au 06/10/2026.
 - **Timeout de démarrage** : 60 s pour lancer le sidecar, 30 s pour la vérification de santé. Sur une
   machine lente, l'app peut sembler bloquée.
 - **Le canal `asse` n'a pas de jeu d'icônes propre** : il réutilise celui de `dev` (volontaire,
@@ -214,9 +216,9 @@ nom du produit, le protocole (`opencode` / `opencode-asse`) et la publication.
     **12 n'appelaient aucune vérification de permission**. Huit en ont désormais une : `browser`,
     `computer`, `mcp_store`, `memory_record`, `mod`, `read_image`, `read_pdf` et `schedule`
     (`read_image` et `read_pdf` réclament en plus `external_directory` hors de la Location, comme
-    `read`). Restent sans invite `memory_list`, `memory_recall` et `memory_reflect`, qui ne font que
-    lire ce qui est déjà stocké, et **`observer`**, dont les actions `dismiss` et `reset` modifient
-    pourtant un état persisté — c'est le dernier outil à traiter.
+    `read`). `observer` est gardé depuis (`34a5a1943e`) : `dismiss` et `reset` passent par
+    `PermissionV2.assert` avec l'action comme ressource. Restent sans invite `memory_list`,
+    `memory_recall` et `memory_reflect`, qui ne font que lire ce qui est déjà stocké.
 - **Bash : les commandes en lecture seule ne demandent pas d'autorisation — sauf si elles visent un
   secret.**
   `packages/core/src/sandbox/bash-readonly.ts` laisse passer sans invite les commandes prouvées non
@@ -234,15 +236,18 @@ nom du produit, le protocole (`opencode` / `opencode-asse`) et la publication.
 _(section à compléter)_
 
 - [ ] Icônes et identité visuelle propres au canal `asse`
-- [ ] Activer la signature et la notarisation macOS pour pouvoir distribuer
+- [x] Activer la signature et la notarisation macOS pour pouvoir distribuer — fait (`4bfea6eba7`),
+      reste à valider avec des certificats valides sur une machine de release
 - [x] Brancher un vrai moteur d'exécution pour les sous-agents — fait : session enfant réelle, liste
       d'autorisés, réouverture refusée
 - [ ] Valider le sous-agent contre un vrai modèle : les tests n'utilisent qu'un faux modèle
 - [x] Ajouter une vérification de permission aux outils qui n'en avaient aucune — fait pour `browser`,
-      `computer`, `mcp_store`, `memory_record`, `mod`, `read_image`, `read_pdf` et `schedule`
-- [ ] Traiter le dernier outil sans vérification : `observer` (`dismiss` et `reset` écrivent un état
-      persisté)
-- [ ] Remplacer le client vendorisé par le package du workspace
+      `computer`, `mcp_store`, `memory_record`, `mod`, `read_image`, `read_pdf`, `schedule` et
+      `observer`
+- [x] Traiter le dernier outil sans vérification : `observer` (`dismiss`/`reset` sous
+      `PermissionV2.assert`, `34a5a1943e`)
+- [ ] Remplacer le client vendorisé par le package du workspace — `session-ui` fait, `packages/app`
+      encore sur le tarball
 - [ ] Migrer les modules `mod/` et `observer/` vers l'architecture Effect (Location-scoped) — le
       sous-agent l'est déjà, sauf son accesseur de publication
 - [ ] À confirmer : tableau de bord de suivi des coûts par modèle
