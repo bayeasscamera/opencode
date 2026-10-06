@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect"
-import { HttpClient } from "effect/unstable/http"
+import { HttpClient, HttpClientRequest, HttpBody } from "effect/unstable/http"
 import * as Tool from "./tool"
 import * as McpWebSearch from "./mcp-websearch"
 import DESCRIPTION from "./websearch.txt"
@@ -24,12 +24,17 @@ export const Parameters = Schema.Struct({
   }),
 })
 
-const WebSearchProviderSchema = Schema.Literals(["exa", "parallel"])
+const WebSearchProviderSchema = Schema.Literals(["brave", "tavily", "exa", "parallel"])
 export type WebSearchProvider = Schema.Schema.Type<typeof WebSearchProviderSchema>
 
-export function selectWebSearchProvider(sessionID: string, flags = { exa: false, parallel: false }): WebSearchProvider {
+export function selectWebSearchProvider(
+  sessionID: string,
+  flags: { brave?: boolean; tavily?: boolean; exa?: boolean; parallel?: boolean } = {},
+): WebSearchProvider {
   const override = process.env.OPENCODE_WEBSEARCH_PROVIDER
-  if (override === "exa" || override === "parallel") return override
+  if (override === "brave" || override === "tavily" || override === "exa" || override === "parallel") return override
+  if (flags.brave) return "brave"
+  if (flags.tavily) return "tavily"
   if (flags.parallel) return "parallel"
   if (flags.exa) return "exa"
 
@@ -37,6 +42,8 @@ export function selectWebSearchProvider(sessionID: string, flags = { exa: false,
 }
 
 export function webSearchProviderLabel(provider: unknown) {
+  if (provider === "brave") return "Brave Web Search"
+  if (provider === "tavily") return "Tavily Web Search"
   if (provider === "parallel") return "Parallel Web Search"
   if (provider === "exa") return "Exa Web Search"
   return "Web Search"
@@ -57,12 +64,96 @@ function parallelAuthHeaders() {
   return { ...headers, Authorization: `Bearer ${process.env.PARALLEL_API_KEY}` }
 }
 
+const BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
+const TAVILY_URL = "https://api.tavily.com/search"
+
+type SearchHit = {
+  readonly title?: string
+  readonly url?: string
+  readonly description?: string
+  readonly content?: string
+}
+
+function callBrave(
+  http: HttpClient.HttpClient,
+  query: string,
+  numResults: number,
+): Effect.Effect<string | undefined, Error> {
+  const url = new URL(BRAVE_URL)
+  url.searchParams.set("q", query)
+  url.searchParams.set("count", String(numResults))
+  url.searchParams.set("safesearch", "moderate")
+
+  const headers: Record<string, string> = {}
+  if (process.env.BRAVE_API_KEY) headers["X-Subscription-Token"] = process.env.BRAVE_API_KEY
+
+  const request = HttpClientRequest.get(url.toString()).pipe(
+    HttpClientRequest.accept("application/json"),
+    HttpClientRequest.setHeaders(headers),
+  )
+
+  return Effect.gen(function* () {
+    const response = yield* HttpClient.filterStatusOk(http).execute(request)
+    const body = yield* response.text
+    const json: { web?: { results?: SearchHit[] } } = JSON.parse(body)
+    const results = json.web?.results
+    if (!Array.isArray(results) || results.length === 0) return undefined
+    return results
+      .slice(0, numResults)
+      .map((r) => `## ${r.title ?? "Sans titre"}\n${(r.description ?? "").replace(/<[^>]+>/g, "")}\n${r.url ?? ""}`)
+      .join("\n\n")
+  }).pipe(
+    Effect.mapError((e) => (e instanceof Error ? e : new Error(String(e)))),
+    Effect.timeoutOrElse({ duration: "15 seconds", orElse: () => Effect.die(new Error("Brave request timed out")) }),
+  )
+}
+
+function callTavily(
+  http: HttpClient.HttpClient,
+  query: string,
+  numResults: number,
+): Effect.Effect<string | undefined, Error> {
+  const requestBody = JSON.stringify({
+    api_key: process.env.TAVILY_API_KEY,
+    query,
+    max_results: numResults,
+    search_depth: "basic",
+  })
+
+  const request = HttpClientRequest.post(TAVILY_URL).pipe(
+    HttpClientRequest.accept("application/json"),
+    HttpClientRequest.setHeader("Content-Type", "application/json"),
+    HttpClientRequest.setBody(HttpBody.text(requestBody, "application/json")),
+  )
+
+  return Effect.gen(function* () {
+    const response = yield* HttpClient.filterStatusOk(http).execute(request)
+    const body = yield* response.text
+    const json: { results?: SearchHit[] } = JSON.parse(body)
+    const results = json.results
+    if (!Array.isArray(results) || results.length === 0) return undefined
+    return results
+      .slice(0, numResults)
+      .map((r) => `## ${r.title ?? "Sans titre"}\n${r.content ?? ""}\n${r.url ?? ""}`)
+      .join("\n\n")
+  }).pipe(
+    Effect.mapError((e) => (e instanceof Error ? e : new Error(String(e)))),
+    Effect.timeoutOrElse({ duration: "15 seconds", orElse: () => Effect.die(new Error("Tavily request timed out")) }),
+  )
+}
+
 function callProvider(
   http: HttpClient.HttpClient,
   provider: WebSearchProvider,
   params: Schema.Schema.Type<typeof Parameters>,
   ctx: Tool.Context,
 ) {
+  if (provider === "brave") {
+    return callBrave(http, params.query, params.numResults || 8)
+  }
+  if (provider === "tavily") {
+    return callTavily(http, params.query, params.numResults || 8)
+  }
   if (provider === "parallel") {
     return McpWebSearch.call(
       http,
@@ -112,6 +203,8 @@ export const WebSearchTool = Tool.define(
           const provider = selectWebSearchProvider(ctx.sessionID, {
             exa: flags.enableExa,
             parallel: flags.enableParallel,
+            brave: Boolean(process.env.BRAVE_API_KEY),
+            tavily: Boolean(process.env.TAVILY_API_KEY),
           })
           const title = webSearchProviderLabel(provider)
           yield* ctx.metadata({ title: `${title} "${params.query}"`, metadata: { provider } })

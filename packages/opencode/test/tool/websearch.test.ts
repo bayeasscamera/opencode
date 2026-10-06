@@ -37,12 +37,22 @@ describe("websearch provider", () => {
     expect(selectWebSearchProvider(SESSION_ID, { exa: false, parallel: true })).toBe("parallel")
   })
 
+  test("routes to Brave when the Brave flag is enabled", () => {
+    expect(selectWebSearchProvider(SESSION_ID, { brave: true, exa: false, parallel: false })).toBe("brave")
+  })
+
+  test("routes to Tavily when the Tavily flag is enabled", () => {
+    expect(selectWebSearchProvider(SESSION_ID, { tavily: true, exa: false, parallel: false })).toBe("tavily")
+  })
+
   test("is enabled for OpenCode providers or explicit websearch provider flags", () => {
     expect(webSearchEnabled(ProviderV2.ID.opencode, { exa: false, parallel: false })).toBe(true)
     expect(webSearchEnabled(ProviderV2.ID.make("opencode-go"), { exa: false, parallel: false })).toBe(true)
     expect(webSearchEnabled(ProviderV2.ID.openai, { exa: false, parallel: false })).toBe(false)
     expect(webSearchEnabled(ProviderV2.ID.openai, { exa: true, parallel: false })).toBe(true)
     expect(webSearchEnabled(ProviderV2.ID.openai, { exa: false, parallel: true })).toBe(true)
+    expect(webSearchEnabled(ProviderV2.ID.openai, { brave: true, exa: false, parallel: false })).toBe(true)
+    expect(webSearchEnabled(ProviderV2.ID.openai, { tavily: true, exa: false, parallel: false })).toBe(true)
   })
 
   test("uses branded labels", () => {
