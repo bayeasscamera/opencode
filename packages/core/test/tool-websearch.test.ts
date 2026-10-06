@@ -45,6 +45,31 @@ describe("WebSearchTool provider selection", () => {
   test("prefers Exa when only its explicit flag is enabled", () => {
     expect(WebSearchTool.selectProvider(sessionID, { enableExa: true, enableParallel: false })).toBe("exa")
   })
+
+  test("prefers Brave over every other provider when its key is configured", () => {
+    expect(
+      WebSearchTool.selectProvider(sessionID, {
+        enableExa: true,
+        enableParallel: true,
+        braveApiKey: "brave-key",
+        tavilyApiKey: "tavily-key",
+      }),
+    ).toBe("brave")
+  })
+
+  test("prefers Tavily over Parallel and Exa when its key is configured", () => {
+    expect(
+      WebSearchTool.selectProvider(sessionID, {
+        enableExa: true,
+        enableParallel: true,
+        tavilyApiKey: "tavily-key",
+      }),
+    ).toBe("tavily")
+  })
+
+  test("falls back to DuckDuckGo when no key or flag is configured", () => {
+    expect(WebSearchTool.selectProvider(sessionID, { enableExa: false, enableParallel: false })).toBe("duckduckgo")
+  })
 })
 
 describe("WebSearchTool MCP response parser", () => {
@@ -64,7 +89,7 @@ describe("WebSearchTool MCP response parser", () => {
 interface Request {
   readonly url: string
   readonly headers: Record<string, string>
-  readonly body: unknown
+  readonly body: unknown | undefined
 }
 
 const requests: Request[] = []
@@ -82,11 +107,18 @@ const http = Layer.succeed(
   HttpClient.HttpClient,
   HttpClient.make((request) =>
     Effect.sync(() => {
-      if (request.body._tag !== "Uint8Array") throw new Error(`Unexpected request body: ${request.body._tag}`)
+      const body =
+        request.body._tag === "Uint8Array"
+          ? JSON.parse(new TextDecoder().decode(request.body.body))
+          : request.body._tag === "Empty"
+            ? undefined
+            : (() => {
+                throw new Error(`Unexpected request body: ${request.body._tag}`)
+              })()
       requests.push({
         url: request.url,
         headers: request.headers,
-        body: JSON.parse(new TextDecoder().decode(request.body.body)),
+        body,
       })
       return HttpClientResponse.fromWeb(request, makeResponse())
     }),
@@ -120,6 +152,12 @@ const websearchConfig = Layer.succeed(
     },
     get parallelApiKey() {
       return config.parallelApiKey
+    },
+    get braveApiKey() {
+      return config.braveApiKey
+    },
+    get tavilyApiKey() {
+      return config.tavilyApiKey
     },
   }),
 )
@@ -258,6 +296,104 @@ describe("WebSearchTool registration", () => {
 
       expect(requests[0]?.url).toBe(`${WebSearchTool.EXA_URL}?exaApiKey=exa+secret`)
       expect(JSON.stringify(settled)).not.toContain("exa secret")
+    }),
+  )
+
+  it.effect("calls Brave with a subscription token and keeps the credential out of model output", () =>
+    Effect.gen(function* () {
+      requests.length = 0
+      assertions.length = 0
+      responseBody = JSON.stringify({
+        web: {
+          results: [
+            { title: "Effect", description: "Type-safe effects", url: "https://effect.website" },
+            { title: "TypeScript", description: "Typed JavaScript", url: "https://typescriptlang.org" },
+          ],
+        },
+      })
+      config = { provider: "brave", enableExa: false, enableParallel: false, braveApiKey: "brave-secret" }
+      const registry = yield* ToolRegistry.Service
+
+      const settled = yield* settleTool(registry, {
+        sessionID,
+        ...toolIdentity,
+        call: { type: "tool-call", id: "call-brave", name: "websearch", input: { query: "effect typescript" } },
+      })
+
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.url).toBe(
+        "https://api.search.brave.com/res/v1/web/search?q=effect+typescript&count=8&safesearch=moderate",
+      )
+      expect(requests[0]?.headers).toMatchObject({ "x-subscription-token": "brave-secret" })
+      expect(requests[0]?.body).toBeUndefined()
+      expect(settled).toEqual({
+        result: {
+          type: "text",
+          value: "## Effect\nType-safe effects\nhttps://effect.website\n\n## TypeScript\nTyped JavaScript\nhttps://typescriptlang.org",
+        },
+        output: {
+          structured: {
+            provider: "brave",
+            text: "## Effect\nType-safe effects\nhttps://effect.website\n\n## TypeScript\nTyped JavaScript\nhttps://typescriptlang.org",
+          },
+          content: [
+            {
+              type: "text",
+              text: "## Effect\nType-safe effects\nhttps://effect.website\n\n## TypeScript\nTyped JavaScript\nhttps://typescriptlang.org",
+            },
+          ],
+        },
+      })
+      expect(JSON.stringify(settled)).not.toContain("brave-secret")
+    }),
+  )
+
+  it.effect("calls Tavily with an API key body and keeps the credential out of model output", () =>
+    Effect.gen(function* () {
+      requests.length = 0
+      assertions.length = 0
+      responseBody = JSON.stringify({
+        results: [
+          { title: "Effect", content: "Type-safe effects", url: "https://effect.website" },
+          { title: "TypeScript", content: "Typed JavaScript", url: "https://typescriptlang.org" },
+        ],
+      })
+      config = { provider: "tavily", enableExa: false, enableParallel: false, tavilyApiKey: "tavily-secret" }
+      const registry = yield* ToolRegistry.Service
+
+      const settled = yield* settleTool(registry, {
+        sessionID,
+        ...toolIdentity,
+        call: { type: "tool-call", id: "call-tavily", name: "websearch", input: { query: "effect typescript", numResults: 2 } },
+      })
+
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.url).toBe("https://api.tavily.com/search")
+      expect(requests[0]?.body).toEqual({
+        api_key: "tavily-secret",
+        query: "effect typescript",
+        max_results: 2,
+        search_depth: "basic",
+      })
+      expect(settled).toEqual({
+        result: {
+          type: "text",
+          value: "## Effect\nType-safe effects\nhttps://effect.website\n\n## TypeScript\nTyped JavaScript\nhttps://typescriptlang.org",
+        },
+        output: {
+          structured: {
+            provider: "tavily",
+            text: "## Effect\nType-safe effects\nhttps://effect.website\n\n## TypeScript\nTyped JavaScript\nhttps://typescriptlang.org",
+          },
+          content: [
+            {
+              type: "text",
+              text: "## Effect\nType-safe effects\nhttps://effect.website\n\n## TypeScript\nTyped JavaScript\nhttps://typescriptlang.org",
+            },
+          ],
+        },
+      })
+      expect(JSON.stringify(settled)).not.toContain("tavily-secret")
     }),
   )
 

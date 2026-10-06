@@ -2,7 +2,7 @@ export * as WebSearchTool from "./websearch"
 
 import { ToolFailure } from "@opencode-ai/llm"
 import { Context, Duration, Effect, Layer, Schema } from "effect"
-import { HttpClient, HttpClientRequest } from "effect/unstable/http"
+import { HttpClient, HttpClientRequest, HttpBody } from "effect/unstable/http"
 import { makeLocationNode } from "../effect/app-node"
 import { LayerNodePlatform } from "../effect/app-node-platform"
 import { truthy } from "../flag/flag"
@@ -31,7 +31,7 @@ export const MAX_RESPONSE_BYTES = 256 * 1024
  */
 export const description = `Search the web using the session's local web search provider. Use this for current information beyond knowledge cutoff.
 
-This is a provider-independent local tool backed by Exa or Parallel. Provider-hosted web search tools are separate and execute at the model provider.
+This is a provider-independent local tool backed by Brave, Tavily, Exa, Parallel, or DuckDuckGo. Provider-hosted web search tools are separate and execute at the model provider.
 
 Optional controls support result count, live crawling ('fallback' or 'preferred'), search type ('auto', 'fast', or 'deep'), and maximum context characters.
 
@@ -56,7 +56,7 @@ export const Input = Schema.Struct({
   ),
 })
 
-export const Provider = Schema.Literals(["exa", "parallel", "duckduckgo"])
+export const Provider = Schema.Literals(["brave", "tavily", "exa", "parallel", "duckduckgo"])
 export type Provider = typeof Provider.Type
 
 export interface Config {
@@ -65,6 +65,8 @@ export interface Config {
   readonly enableParallel: boolean
   readonly exaApiKey?: string
   readonly parallelApiKey?: string
+  readonly braveApiKey?: string
+  readonly tavilyApiKey?: string
 }
 
 export class ConfigService extends Context.Service<ConfigService, Config>()("@opencode/v2/WebSearchConfig") {}
@@ -73,6 +75,8 @@ export class ConfigService extends Context.Service<ConfigService, Config>()("@op
 export const defaultConfigLayer = Layer.sync(ConfigService, () =>
   ConfigService.of({
     provider:
+      process.env.OPENCODE_WEBSEARCH_PROVIDER === "brave" ||
+      process.env.OPENCODE_WEBSEARCH_PROVIDER === "tavily" ||
       process.env.OPENCODE_WEBSEARCH_PROVIDER === "exa" ||
       process.env.OPENCODE_WEBSEARCH_PROVIDER === "parallel" ||
       process.env.OPENCODE_WEBSEARCH_PROVIDER === "duckduckgo"
@@ -82,6 +86,8 @@ export const defaultConfigLayer = Layer.sync(ConfigService, () =>
     enableParallel: truthy("OPENCODE_ENABLE_PARALLEL") || truthy("OPENCODE_EXPERIMENTAL_PARALLEL"),
     exaApiKey: process.env.EXA_API_KEY,
     parallelApiKey: process.env.PARALLEL_API_KEY,
+    braveApiKey: process.env.BRAVE_API_KEY,
+    tavilyApiKey: process.env.TAVILY_API_KEY,
   }),
 )
 
@@ -89,13 +95,15 @@ export const configNode = makeLocationNode({ service: ConfigService, layer: defa
 
 export function selectProvider(
   sessionID: string,
-  flags: Pick<Config, "enableExa" | "enableParallel" | "exaApiKey" | "parallelApiKey"> = {
+  flags: Pick<Config, "enableExa" | "enableParallel" | "exaApiKey" | "parallelApiKey" | "braveApiKey" | "tavilyApiKey"> = {
     enableExa: false,
     enableParallel: false,
   },
   override?: Provider,
 ): Provider {
   if (override) return override
+  if (flags.braveApiKey) return "brave"
+  if (flags.tavilyApiKey) return "tavily"
   if (flags.enableParallel || flags.parallelApiKey) return "parallel"
   if (flags.enableExa || flags.exaApiKey) return "exa"
   return "duckduckgo"
@@ -228,6 +236,100 @@ const callDuckDuckGo = (http: HttpClient.HttpClient, query: string): Effect.Effe
     )
   })
 
+const BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
+const TAVILY_URL = "https://api.tavily.com/search"
+
+type SearchHit = {
+  readonly title?: string
+  readonly url?: string
+  readonly description?: string
+  readonly content?: string
+}
+
+const callBrave = (
+  http: HttpClient.HttpClient,
+  query: string,
+  apiKey: string | undefined,
+  numResults: number,
+): Effect.Effect<string | undefined, Error> =>
+  Effect.gen(function* () {
+    const url = new URL(BRAVE_URL)
+    url.searchParams.set("q", query)
+    url.searchParams.set("count", String(numResults))
+    url.searchParams.set("safesearch", "moderate")
+
+    const headers: Record<string, string> = apiKey ? { "X-Subscription-Token": apiKey } : {}
+    const request = HttpClientRequest.get(url.toString()).pipe(
+      HttpClientRequest.accept("application/json"),
+      HttpClientRequest.setHeaders(headers),
+    )
+
+    return yield* Effect.gen(function* () {
+      const response = yield* HttpClient.filterStatusOk(http).execute(request)
+      const body = yield* collectBoundedResponseBody(
+        response,
+        MAX_RESPONSE_BYTES,
+        () => new Error(`Brave response exceeded ${MAX_RESPONSE_BYTES} bytes`),
+      )
+      const json: { web?: { results?: SearchHit[] } } = JSON.parse(body.toString("utf8"))
+      const results = json.web?.results
+      if (!Array.isArray(results) || results.length === 0) return undefined
+      return results
+        .slice(0, numResults)
+        .map((r) => `## ${r.title ?? "Sans titre"}\n${(r.description ?? "").replace(/<[^>]+>/g, "")}\n${r.url ?? ""}`)
+        .join("\n\n")
+    }).pipe(
+      Effect.mapError((e) => (e instanceof Error ? e : new Error(String(e)))),
+      Effect.timeoutOrElse({
+        duration: Duration.seconds(15),
+        orElse: () => Effect.fail(new Error("Brave request timed out")),
+      }),
+    )
+  })
+
+const callTavily = (
+  http: HttpClient.HttpClient,
+  query: string,
+  apiKey: string | undefined,
+  numResults: number,
+): Effect.Effect<string | undefined, Error> =>
+  Effect.gen(function* () {
+    const requestBody = JSON.stringify({
+      api_key: apiKey,
+      query,
+      max_results: numResults,
+      search_depth: "basic",
+    })
+
+    const request = HttpClientRequest.post(TAVILY_URL).pipe(
+      HttpClientRequest.accept("application/json"),
+      HttpClientRequest.setHeader("Content-Type", "application/json"),
+      HttpClientRequest.setBody(HttpBody.text(requestBody, "application/json")),
+    )
+
+    return yield* Effect.gen(function* () {
+      const response = yield* HttpClient.filterStatusOk(http).execute(request)
+      const body = yield* collectBoundedResponseBody(
+        response,
+        MAX_RESPONSE_BYTES,
+        () => new Error(`Tavily response exceeded ${MAX_RESPONSE_BYTES} bytes`),
+      )
+      const json: { results?: SearchHit[] } = JSON.parse(body.toString("utf8"))
+      const results = json.results
+      if (!Array.isArray(results) || results.length === 0) return undefined
+      return results
+        .slice(0, numResults)
+        .map((r) => `## ${r.title ?? "Sans titre"}\n${r.content ?? ""}\n${r.url ?? ""}`)
+        .join("\n\n")
+    }).pipe(
+      Effect.mapError((e) => (e instanceof Error ? e : new Error(String(e)))),
+      Effect.timeoutOrElse({
+        duration: Duration.seconds(15),
+        orElse: () => Effect.fail(new Error("Tavily request timed out")),
+      }),
+    )
+  })
+
 const Output = Schema.Struct({
   provider: Provider,
   text: Schema.String,
@@ -261,32 +363,36 @@ const layer = Layer.effectDiscard(
               })
 
               const text =
-                provider === "duckduckgo"
-                  ? yield* callDuckDuckGo(http, input.query)
-                  : provider === "exa"
-                    ? yield* callMcp(http, exaUrl(config.exaApiKey), "web_search_exa", ExaArgs, {
-                        query: input.query,
-                        type: input.type || "auto",
-                        numResults: input.numResults || 8,
-                        livecrawl: input.livecrawl || "fallback",
-                        contextMaxCharacters: input.contextMaxCharacters,
-                      })
-                    : yield* callMcp(
-                        http,
-                        PARALLEL_URL,
-                        "web_search",
-                        ParallelArgs,
-                        {
-                          objective: input.query,
-                          search_queries: [input.query],
-                          session_id: context.sessionID,
-                          // V2 invocation context does not safely expose the model yet.
-                        },
-                        {
-                          "User-Agent": `opencode/${InstallationVersion}`,
-                          ...(config.parallelApiKey ? { Authorization: `Bearer ${config.parallelApiKey}` } : {}),
-                        },
-                      )
+                provider === "brave"
+                  ? yield* callBrave(http, input.query, config.braveApiKey, input.numResults || 8)
+                  : provider === "tavily"
+                    ? yield* callTavily(http, input.query, config.tavilyApiKey, input.numResults || 8)
+                    : provider === "duckduckgo"
+                      ? yield* callDuckDuckGo(http, input.query)
+                      : provider === "exa"
+                        ? yield* callMcp(http, exaUrl(config.exaApiKey), "web_search_exa", ExaArgs, {
+                            query: input.query,
+                            type: input.type || "auto",
+                            numResults: input.numResults || 8,
+                            livecrawl: input.livecrawl || "fallback",
+                            contextMaxCharacters: input.contextMaxCharacters,
+                          })
+                        : yield* callMcp(
+                            http,
+                            PARALLEL_URL,
+                            "web_search",
+                            ParallelArgs,
+                            {
+                              objective: input.query,
+                              search_queries: [input.query],
+                              session_id: context.sessionID,
+                              // V2 invocation context does not safely expose the model yet.
+                            },
+                            {
+                              "User-Agent": `opencode/${InstallationVersion}`,
+                              ...(config.parallelApiKey ? { Authorization: `Bearer ${config.parallelApiKey}` } : {}),
+                            },
+                          )
               return {
                 provider,
                 text: text ?? NO_RESULTS,
