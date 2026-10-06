@@ -6,6 +6,7 @@
   "license": "MIT",
   "exports": {
     ".": "./src/index.ts",
+    "./promise": "./src/promise.ts",
     "./effect": "./src/effect.ts"
   },
   "scripts": {
