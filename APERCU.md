@@ -219,6 +219,11 @@ nom du produit, le protocole (`opencode` / `opencode-asse`) et la publication.
     enfant rouverte ensuite ne résout plus son agent et se voit refuser **tous** ses outils — choix
     volontaire, préféré à la réapplication des règles.
   - **Non câblé** : `steer` en cours de run, et le mode arrière-plan.
+  - **`SessionV2.wait()` est un stub volontaire**, pas un bug : la famille
+    `move`/`shell`/`skill`/`switchAgent`/`compact`/`wait` est déclarée indisponible en V2
+    (`session.ts:96-99`) le temps du design. Pour attendre la fin d'un run, la voie correcte est
+    le signal `SessionExecution.active` — c'est ce que le moteur sous-agent fait déjà (poll borné,
+    validé en live le 07/10/2026).
   - **Limite héritée, en grande partie corrigée.** Sur les 24 outils reçus par un enfant qui écrit,
     **12 n'appelaient aucune vérification de permission**. Huit en ont désormais une : `browser`,
     `computer`, `mcp_store`, `memory_record`, `mod`, `read_image`, `read_pdf` et `schedule`
