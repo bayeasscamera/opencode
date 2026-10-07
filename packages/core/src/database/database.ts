@@ -54,4 +54,7 @@ export function path() {
   return join(Global.Path.data, `opencode-${InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
 }
 
-export const node = makeGlobalNode({ service: Service, layer: layerFromPath(path()), deps: [] })
+// The path is resolved when the node is first built, not when this module is evaluated: tests and
+// embedded hosts repoint `OPENCODE_DB` after import, and a path frozen at evaluation time would
+// keep them all on the database that was current during module load.
+export const node = makeGlobalNode({ service: Service, layer: Layer.suspend(() => layerFromPath(path())), deps: [] })
