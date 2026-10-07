@@ -35,6 +35,10 @@ for (const count of [0, 9999, 10000, 10001, 20005]) {
           String(index + 1),
         )
       })
+      // Finalize before the `using` disposal closes the database: bun 1.3.14 closes a statement
+      // only when it is finalized, and the implicit Database close otherwise fails with
+      // "database is locked".
+      insert.finalize()
     })()
     const pages: number[] = []
     const rows = await Effect.runPromise(
