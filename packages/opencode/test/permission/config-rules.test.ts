@@ -39,6 +39,30 @@ describe("legacy permission config translation", () => {
     ])
   })
 
+  test("expands only the exact $HOME forms, never a bare prefix", () => {
+    // Regression: `startsWith("$HOME")` accepted any suffix, so `$HOMELESS/foo` was rewritten to
+    // `<home>LESS/foo` and no longer matched the path the rule was written for. A `deny` written
+    // that way was therefore silently disabled. Both evaluators now expand the same three exact
+    // forms (see `expandHome` in packages/core/src/config/plugin/agent.ts).
+    expect(
+      Permission.fromConfig({
+        read: {
+          $HOME: "deny",
+          "$HOME/a": "deny",
+          "$HOME\\a": "deny",
+          "$HOMELESS/foo": "allow",
+          "$HOMEBREW_PREFIX/bin/*": "allow",
+        },
+      }),
+    ).toEqual([
+      { permission: "read", pattern: homedir(), action: "deny" },
+      { permission: "read", pattern: `${homedir()}/a`, action: "deny" },
+      { permission: "read", pattern: `${homedir()}\\a`, action: "deny" },
+      { permission: "read", pattern: "$HOMELESS/foo", action: "allow" },
+      { permission: "read", pattern: "$HOMEBREW_PREFIX/bin/*", action: "allow" },
+    ])
+  })
+
   test("merge flattens rulesets in order", () => {
     expect(
       Permission.merge(

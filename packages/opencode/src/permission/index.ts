@@ -176,10 +176,16 @@ const layer = Layer.effect(
 )
 
 function expand(pattern: string): string {
+  // Each form must be matched exactly. The previous `startsWith("$HOME")` accepted any suffix, so
+  // `$HOMELESS/foo` became `<home>LESS/foo` and `$HOMEBREW_PREFIX/bin/*` became
+  // `<home>BREW_PREFIX/bin/*`: the rewritten pattern no longer matched the path the rule was written
+  // for, which silently disabled a `deny`. This mirrors `expandHome` in
+  // `packages/core/src/config/plugin/agent.ts`, including the Windows separator form.
   if (pattern.startsWith("~/")) return os.homedir() + pattern.slice(1)
   if (pattern === "~") return os.homedir()
+  if (pattern === "$HOME") return os.homedir()
   if (pattern.startsWith("$HOME/")) return os.homedir() + pattern.slice(5)
-  if (pattern.startsWith("$HOME")) return os.homedir() + pattern.slice(5)
+  if (pattern.startsWith("$HOME\\")) return os.homedir() + pattern.slice(5)
   return pattern
 }
 
