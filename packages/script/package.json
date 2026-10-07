@@ -7,7 +7,7 @@
   },
   "devDependencies": {
     "@types/bun": "catalog:",
-    "@types/semver": "^7.5.8"
+    "@types/semver": "catalog:"
   },
   "exports": {
     ".": "./src/index.ts"
