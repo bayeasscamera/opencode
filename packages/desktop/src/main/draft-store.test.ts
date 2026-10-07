@@ -1,7 +1,15 @@
 import { expect, test } from "bun:test"
-import { createDesktopDraftStore } from "./draft-store"
 
-test("flushes the latest buffered draft and stores blobs", () => {
+// The desktop main process runs on Node's built-in SQLite, which Bun does not provide (verified on
+// 1.3.14). The store is imported lazily and the assertion only runs where the module exists, so the
+// suite stays runnable here instead of dying on an unresolvable import.
+const hasNodeSqlite = await import("node:sqlite").then(
+  () => true,
+  () => false,
+)
+
+test.skipIf(!hasNodeSqlite)("flushes the latest buffered draft and stores blobs", async () => {
+  const { createDesktopDraftStore } = await import("./draft-store")
   const store = createDesktopDraftStore(":memory:")
   store.set("prompt", "first")
   store.set("prompt", "latest")
