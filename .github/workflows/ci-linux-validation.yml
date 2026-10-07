@@ -1,0 +1,46 @@
+# Throwaway workflow used once to validate the suites this branch wires into CI on Linux runners.
+# The repository's own workflows target Blacksmith runners, which do not exist on a fork, so this
+# file exists only on the temporary ci-linux-validation branch and must never be merged.
+name: ci-linux-validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      # Every step runs even if an earlier one fails, so a single run reports the state of all
+      # three gates instead of stopping at the first failure.
+      - name: Tests
+        if: always()
+        run: GITHUB_ACTIONS=false bun turbo test
+        env:
+          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "false"
+
+      - name: Typecheck
+        if: always()
+        run: bun typecheck
+
+      - name: Lint
+        if: always()
+        run: bun run lint
+
+      - name: Secret scan
+        if: always()
+        run: |
+          set -euo pipefail
+          version=8.30.1
+          curl -sSL -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz"
+          tar xzf gitleaks.tar.gz gitleaks
+          ./gitleaks detect --no-git --config .gitleaks.toml --redact --verbose
