@@ -24,3 +24,33 @@ jobs:
       # backlog is cleared.
       - name: Run oxlint
         run: bun run lint
+
+      # .husky/pre-commit formats staged files, but a hook can be bypassed with --no-verify and a
+      # fresh clone has no hook until `prepare` runs. This step reports formatting drift on the
+      # files a pull request touches, using the same extension and path filters as the hook.
+      #
+      # It is ADVISORY (continue-on-error) because the branch backlog is not formatted yet: at
+      # 67 commits, 30 of the 122 files this branch changes predate the hook. Remove
+      # `continue-on-error` once that backlog is cleared, which turns this into a real gate:
+      #
+      #   xargs bunx prettier --write -- < the file list this step prints
+      - name: Report formatting drift on changed files (advisory)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          base=$(git merge-base "origin/${{ github.base_ref }}" HEAD || true)
+          if [ -z "$base" ] || [ "$base" = "$(git rev-parse HEAD)" ]; then
+            echo "No new commits to check"
+            exit 0
+          fi
+          git diff --name-only "$base...HEAD" \
+            | grep -E '\.(js|jsx|ts|tsx|json|jsonc|css|md|mdx|yml|yaml|html)$' \
+            | grep -vE '(^|/)(dist|out|gen|generated|node_modules)/|\.gen\.(ts|tsx)$|^packages/sdk/openapi\.json$' \
+            > changed.txt || true
+          if [ ! -s changed.txt ]; then
+            echo "No formattable files changed"
+            exit 0
+          fi
+          echo "$(wc -l < changed.txt) formattable file(s) changed"
+          xargs bunx prettier --check -- < changed.txt

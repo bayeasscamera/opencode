@@ -67,3 +67,30 @@ git remote add fork git@github.com:<votre-compte>/opencode.git
 git push -u fork security-hardening
 # 2. ouvrir la PR depuis le fork vers anomalyco/opencode:dev
 ```
+
+## 9. Formatage — mesuré, pas imposé
+
+Le format n'était appliqué que par le hook `pre-commit` (Lot 0/P1), donc contournable par
+`--no-verify` et absent d'un clone frais avant `prepare`.
+
+**Mesure sur cette branche** : sur les **122** fichiers modifiés depuis la base de fusion, **30** ne
+sont pas au format Prettier (mêmes filtres d'extension et de chemin que le hook). Ce sont ceux de vos
+commits antérieurs au hook, pas les miens — j'ai formaté les miens pour ne pas ajouter au passif.
+
+**Décision prise** : ajouter le contrôle en CI en **consultatif** (`continue-on-error: true` dans
+`.github/workflows/lint.yml`), et **non bloquant**. Un gate bloquant ferait échouer cette PR sur
+30 fichiers que je n'ai pas écrits, et reformater votre travail sans votre accord serait un
+changement unilatéral non demandé.
+
+**Pour le rendre bloquant** (une fois le passif traité) :
+
+```sh
+# 1. formater le passif de la branche
+BASE=$(git merge-base origin/dev HEAD)
+git diff --name-only "$BASE...HEAD" | grep -E '\.(js|jsx|ts|tsx|json|jsonc|css|md|mdx|yml|yaml|html)$' \
+  | grep -vE '(^|/)(dist|out|gen|generated|node_modules)/' | xargs bunx prettier --write --
+# 2. retirer la ligne `continue-on-error: true` du pas de format dans .github/workflows/lint.yml
+```
+
+À noter : `prettier --check .` signale **914 fichiers** à l'échelle du dépôt — c'est un chantier
+distinct, qui produirait un diff non relisable en une PR.
