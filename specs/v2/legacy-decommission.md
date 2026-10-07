@@ -88,6 +88,9 @@ error taxonomy) and the seven-step order, each step guarded by the parity corpus
 - [x] M2.1 — the matcher both evaluators share is locked by a differential test:
       `packages/opencode/test/permission/matcher-parity.test.ts` (13 cases: wildcards, ordering,
       backslash normalisation, case sensitivity, ruleset flattening).
+- [x] `expand()` in `packages/opencode/src/permission/index.ts` no longer over-matches the
+      `$HOME` prefix (`$HOMELESS/foo` was rewritten to `<home>LESS/foo`, silently disabling such a
+      rule, `deny` included). It now mirrors `expandHome` in `core/src/config/plugin/agent.ts`.
 - [ ] M2.2 — vocabulary bridge, then M2.3 single ruleset source, M2.4 persisted "always",
       M2.5 call sites, M2.6 consumers, M2.7 delete V1 (see the design doc).
 - [ ] `packages/opencode/src/permission/index.ts` delegates to `PermissionV2` for every decision.

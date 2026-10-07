@@ -64,6 +64,22 @@ matches different commands under each evaluator. Adopting V2's scoping is a **be
 remove a deny**, so it needs its own review step and a test proving which commands still match — it must
 not ride along inside a refactor.
 
+### Fixed: V1 over-matched the `$HOME` prefix
+
+Independent of the scoping question, V1's `expand()` used `startsWith("$HOME")`, which accepts any
+suffix. Measured before the fix:
+
+```jsonc
+{ "read": { "$HOMELESS/foo": "deny" } }        // became  <home>LESS/foo
+{ "read": { "$HOMEBREW_PREFIX/bin/*": "deny" } } // became  <home>BREW_PREFIX/bin/*
+```
+
+The rewritten pattern no longer matched the path the rule was written for, so such a rule —
+**including a `deny`** — was silently disabled. V2 already did the right thing
+(`agent.ts:134-136`: exactly `$HOME`, `$HOME/`, `$HOME\\`). V1's `expand()` now mirrors it, so both
+evaluators agree on the three exact forms and the Windows separator is handled. This restores denies
+that were being dropped; it removes nothing.
+
 ## Migration order
 
 Each step is a separate PR, and the parity test guards every one of them. Steps 1 and 2 touch no
