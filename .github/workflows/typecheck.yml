@@ -3,8 +3,9 @@ name: typecheck
 on:
   push:
     branches: [dev]
+  # Every pull request, not just those targeting dev: a change opened against another branch was
+  # previously never typechecked.
   pull_request:
-    branches: [dev]
   workflow_dispatch:
 
 jobs:
