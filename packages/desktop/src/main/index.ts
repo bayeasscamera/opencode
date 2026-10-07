@@ -318,12 +318,15 @@ const main = Effect.gen(function* () {
   const updateTimer = setInterval(() => void updater.check(), 10 * 60 * 1000)
   updateTimer.unref()
   app.once("will-quit", () => clearInterval(updateTimer))
+  // Diagnostics must not delay the sidecar: starting the net log can wait for file handles, while
+  // the sidecar spawn is what the user is actually waiting for.
   yield* Effect.promise(() => startNetLog()).pipe(
     Effect.catch((error) =>
       Effect.sync(() => {
         logger.warn("failed to start net log", error)
       }),
     ),
+    Effect.forkChild,
   )
 
   const loadingTask = yield* Effect.gen(function* () {
@@ -408,8 +411,6 @@ const main = Effect.gen(function* () {
     logger.log("loading task finished")
   }).pipe(forwardInitializationFailure(serverReady), Effect.forkChild)
 
-  yield* Fiber.await(loadingTask)
-
   app.on("window-all-closed", () => {
     if (process.platform === "darwin") return
     app.quit()
@@ -419,8 +420,15 @@ const main = Effect.gen(function* () {
     restoreMainWindows()
   })
 
+  // Show the window before the sidecar is ready. The renderer renders its own splash and resolves
+  // the server through `awaitInitialization`, so first paint no longer waits for the sidecar to
+  // boot and pass its health check (previously the window was only created after the whole loading
+  // task settled, which includes a 30s health timeout). The window reports the wait through the
+  // existing splash instead of showing nothing at all.
   const windows = restoreMainWindows()
   if (windows.length) createMenu(menuDeps)
+
+  yield* Fiber.await(loadingTask)
 })
 
 Effect.runFork(main)
