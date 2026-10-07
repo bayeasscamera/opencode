@@ -33,3 +33,23 @@ logs/
 *.bun-build
 tsconfig.tsbuildinfo
 /artifacts/
+
+# Local tool state and work notes. These appear next to the checkout when external agent tooling
+# writes into it; the generate workflow runs `git add -A`, so an untracked note would otherwise be
+# committed. Keep work notes in a tracked docs path if they are meant to be shared.
+.v2c/
+.video_agent/
+.workbuddy-ai/
+.opencode/commands/
+.opencode/skills/
+*.local.md
+
+# Working notes kept next to the checkout while an investigation is in flight.
+/SOUS-AGENT.md
+/CORRECTIONS-SOUS-AGENT.md
+/VERIFICATION-SOUS-AGENT.md
+/packages/SOUS-AGENT.md
+
+# Build output that is not covered by the `dist` rule above.
+packages/desktop/out/
+packages/desktop/dist/
