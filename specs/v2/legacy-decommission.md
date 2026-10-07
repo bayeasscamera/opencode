@@ -52,7 +52,13 @@ Measured with `find`/`grep` over `packages/core/src` and `packages/opencode/src`
 | util          |     1070 |       1075 |            — |            — | Known duplicate helpers                                     |
 | markdown.d.ts |        4 |          4 |            — |            — | Ambient declaration                                         |
 
-Total measured overlap: **~15 179 lines** across the paired domains.
+Total measured overlap: **~15 179 lines** across the paired domains (measured at `ab936fb69f`).
+
+> **The LOC columns above are historical.** Run `bun run architecture:inventory`
+> (`script/architecture-inventory.ts`) for current figures; it reports per-domain line counts for
+> both trees and is the source of truth. At `daf6b7765c` it reported **44 171 lines across the 15
+> shared domains** below, plus top-level files (10 388 lines in `core/src`, 281 in
+> `opencode/src`) which the table does not list separately.
 
 ## Milestones
 
@@ -60,11 +66,15 @@ Each milestone is a checkpoint, not a schedule. A milestone closes when its exit
 
 ### M1 — Freeze the boundary
 
-- [ ] CI fails on a new import edge from current code into `packages/opencode/src` (an
-      `oxlint` restriction or an import-boundary test in `packages/core`).
+- [x] CI fails on a new import edge from current code into `packages/opencode/src`:
+      `packages/core/test/architecture-boundary.test.ts` reads every import specifier of the 12
+      current packages (resolving relative paths, so it cannot be dodged by writing `../../opencode`)
+      and checks the runtime dependency direction from `AGENTS.md`. Verified to fail when a
+      violation is injected into either check.
 - [ ] `packages/opencode/src/index.ts` documents which entrypoints still build the legacy runtime
       and why.
-- [ ] This inventory is regenerated and re-committed when the numbers move.
+- [x] The inventory is regenerated on demand rather than hand-maintained:
+      `bun run architecture:inventory` (`script/architecture-inventory.ts`).
 
 ### M2 — Unify permission (highest-value single merge)
 
@@ -108,15 +118,11 @@ security-relevant disagreement.
 ## Verification
 
 ```sh
-# Regenerate the inventory numbers above.
-for d in session tool permission plugin config project account control-plane share skill; do
-  printf "%-14s core=%s legacy=%s\n" "$d" \
-    "$(find packages/core/src/$d -name '*.ts' -exec cat {} + | wc -l)" \
-    "$(find packages/opencode/src/$d -name '*.ts' -exec cat {} + | wc -l)"
-done
+# Regenerate the inventory numbers.
+bun run architecture:inventory
 
-# Prove current code does not reach into the legacy tree.
-grep -rn 'packages/opencode/src' packages/core/src packages/schema/src packages/protocol/src || echo "boundary intact"
+# Prove the boundary holds; the same checks run in CI as part of @opencode-ai/core#test.
+bun test packages/core/test/architecture-boundary.test.ts
 ```
 
 ## Out of scope
