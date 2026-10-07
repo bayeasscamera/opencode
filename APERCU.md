@@ -186,8 +186,11 @@ nom du produit, le protocole (`opencode` / `opencode-asse`) et la publication.
   groupe MCP supprimé, et des renommages singulier→pluriel type `AgentListInput`→`AgentsListInput`).
   À traiter comme chantier dédié : soit un pont de compat dans `packages/client/src/promise.ts`,
   soit la migration des ~30 fichiers d'`app` vers la surface générée.
-- **Timeout de démarrage** : 60 s pour lancer le sidecar, 30 s pour la vérification de santé. Sur une
-  machine lente, l'app peut sembler bloquée.
+- **Démarrage** : la fenêtre s'affiche **avant** que le sidecar soit prêt et montre son écran de
+  chargement, au lieu d'attendre en silence. Le garde-fou « sidecar qui ne progresse plus » reste de
+  60 s et la vérification de santé de 30 s ; le premier est ajustable via
+  `OPENCODE_SIDECAR_STARTUP_TIMEOUT_MS` (valeur invalide → repli sur 60 s). Si le sidecar échoue,
+  l'erreur s'affiche dans la fenêtre (`error.page.description.localServerStartup`).
 - **Le canal `asse` n'a pas de jeu d'icônes propre** : il réutilise celui de `dev` (volontaire,
   documenté dans `copy-icons.ts`).
 - **Aucun `TODO`/`FIXME` dans le code desktop** — l'hygiène de commentaires est bonne. En revanche,
