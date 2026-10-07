@@ -81,8 +81,15 @@ Each milestone is a checkpoint, not a schedule. A milestone closes when its exit
 
 Two evaluators exist: `packages/core/src/permission.ts` (current) and
 `packages/opencode/src/permission/` (legacy). This is the divergence most likely to produce a
-security-relevant disagreement.
+security-relevant disagreement. The merge is not mechanical: **`specs/v2/permission-merge.md`**
+records the ten divergences (ruleset source, "always" persistence, deny-vs-saved-allow, events,
+error taxonomy) and the seven-step order, each step guarded by the parity corpus.
 
+- [x] M2.1 — the matcher both evaluators share is locked by a differential test:
+      `packages/opencode/test/permission/matcher-parity.test.ts` (13 cases: wildcards, ordering,
+      backslash normalisation, case sensitivity, ruleset flattening).
+- [ ] M2.2 — vocabulary bridge, then M2.3 single ruleset source, M2.4 persisted "always",
+      M2.5 call sites, M2.6 consumers, M2.7 delete V1 (see the design doc).
 - [ ] `packages/opencode/src/permission/index.ts` delegates to `PermissionV2` for every decision.
 - [ ] `packages/opencode/src/permission/arity.ts` is either ported as typed schema data or deleted.
 - [ ] `permission.v2.*` events become the only permission events the App/TUI consume.
