@@ -17,8 +17,21 @@ type SidecarMessage =
 export type SidecarListener = { stop: () => Promise<void> }
 
 const SIDECAR_SERVICE_NAME = "opencode server"
-const SIDECAR_START_STALL_TIMEOUT = 60_000
+// A cold start on a slow machine (antivirus scan, first run, cold disk) can exceed 60s, and the
+// failure then surfaces as an opaque "server did not start" dialog. The window is configurable so
+// slow environments can raise it without patching the bundle.
+const SIDECAR_START_STALL_TIMEOUT = resolveStartupTimeout()
 const SIDECAR_STOP_TIMEOUT = 6_000
+
+function resolveStartupTimeout() {
+  const fallback = 60_000
+  const raw = process.env.OPENCODE_SIDECAR_STARTUP_TIMEOUT_MS
+  if (!raw) return fallback
+  const parsed = Number(raw)
+  // Ignore anything that is not a positive, finite number of milliseconds.
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback
+  return parsed
+}
 
 type SpawnLocalServerOptions = {
   userDataPath: string
