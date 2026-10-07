@@ -71,8 +71,9 @@ Each milestone is a checkpoint, not a schedule. A milestone closes when its exit
       current packages (resolving relative paths, so it cannot be dodged by writing `../../opencode`)
       and checks the runtime dependency direction from `AGENTS.md`. Verified to fail when a
       violation is injected into either check.
-- [ ] `packages/opencode/src/index.ts` documents which entrypoints still build the legacy runtime
-      and why.
+- [x] `packages/opencode/src/index.ts` documents which entry points still build the legacy runtime
+      and why: `AppRuntime` (TUI worker, Effect-based CLI commands, per-directory instances), the
+      HTTP API session handler, and the GitHub handler — plus the two imports that are not consumers.
 - [x] The inventory is regenerated on demand rather than hand-maintained:
       `bun run architecture:inventory` (`script/architecture-inventory.ts`).
 
