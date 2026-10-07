@@ -2,6 +2,7 @@ import { usePlatform } from "@/context/platform"
 import { ServerConnection } from "@/context/server"
 import { authTokenFromCredentials, createSdkForServer } from "./server"
 import { ClientError, OpenCode } from "@opencode-ai/client"
+import { makeEventListener } from "@solid-primitives/event-listener"
 import { Accessor, createEffect, onCleanup } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 
@@ -16,7 +17,10 @@ interface CheckServerHealthOptions {
 
 const defaultTimeoutMs = 30_000
 const defaultRetryCount = 2
-const defaultRetryDelayMs = 100
+// Backoff between retries of an unreachable server. The previous flat 100ms meant a burst of three
+// requests 100ms apart, which hammers a server that is merely still starting. Backing off keeps the
+// total retry window (~1.4s) far below the poll interval and the 30s request timeout.
+const retryDelayMs = (attempt: number) => 200 * 2 ** attempt
 const cacheMs = 750
 const healthCache = new Map<
   string,
@@ -77,10 +81,10 @@ export async function checkServerHealth(
   const timeout = opts?.signal ? undefined : timeoutSignal(opts?.timeoutMs ?? defaultTimeoutMs)
   const signal = opts?.signal ?? timeout?.signal
   const retryCount = opts?.retryCount ?? defaultRetryCount
-  const retryDelayMs = opts?.retryDelayMs ?? defaultRetryDelayMs
+  const delayFor = (attempt: number) => opts?.retryDelayMs ?? retryDelayMs(attempt)
   const next = (count: number, error: unknown) => {
     if (count >= retryCount || !retryable(error, signal)) return Promise.resolve({ healthy: false } as const)
-    return wait(retryDelayMs * (count + 1), signal)
+    return wait(delayFor(count), signal)
       .then(() => attempt(count + 1))
       .catch(() => ({ healthy: false }))
   }
@@ -112,7 +116,15 @@ export async function checkServerHealth(
   return attempt(0).finally(() => timeout?.clear?.())
 }
 
-const pollMs = 10_000
+// The polling interval must exceed the worst-case single check. `checkServerHealth` allows 30s by
+// default (defaultTimeoutMs) and can retry twice, so a 10s interval guaranteed overlapping ticks:
+// against an unreachable server every tick started a new 30s request while the previous ones were
+// still in flight. 45s keeps the cadence below that worst case while still refreshing quickly in
+// the normal, fast case.
+const pollMs = 45_000
+
+/** Cap on distinct server entries kept in `healthCache`; entries are removed as they are seen. */
+const healthCacheMaxEntries = 8
 
 export function useCheckServerHealth() {
   const platform = usePlatform()
@@ -130,6 +142,16 @@ export function useCheckServerHealth() {
       next.at = Date.now()
     })
     healthCache.set(key, { at: now, done: false, fetch: fetcher, promise })
+    // The cache key includes the server URL and credentials, so it grows with every distinct server
+    // the user has ever polled. Re-inserting the key moves it to the end of the Map's iteration
+    // order, which makes the oldest entry the first one seen here.
+    if (healthCache.size > healthCacheMaxEntries) {
+      for (const oldest of healthCache.keys()) {
+        if (oldest === key) break
+        healthCache.delete(oldest)
+        break
+      }
+    }
     return promise
   }
 }
@@ -145,23 +167,43 @@ export const useServerHealth = (servers: Accessor<ServerConnection.Any[]>, enabl
     }
     const list = servers()
     let dead = false
+    let running = false
 
     const refresh = async () => {
-      const results: Record<string, ServerHealth> = {}
-      await Promise.all(
-        list.map(async (conn) => {
-          const key = ServerConnection.key(conn)
-          const result = await checkServerHealth(conn.http)
-          results[key] = result
-          if (!dead) setStatus(key, result)
-        }),
-      )
-      if (dead) return
-      setStatus(reconcile(results))
+      // Re-entrancy guard. A check may legitimately last up to 30s (defaultTimeoutMs) plus retries,
+      // so a tick can still arrive before the previous pass settled. Without this guard each tick
+      // would stack another full set of requests on an unreachable server.
+      if (running) return
+      running = true
+      try {
+        const results: Record<string, ServerHealth> = {}
+        await Promise.all(
+          list.map(async (conn) => {
+            const key = ServerConnection.key(conn)
+            const result = await checkServerHealth(conn.http)
+            results[key] = result
+            if (!dead) setStatus(key, result)
+          }),
+        )
+        if (dead) return
+        setStatus(reconcile(results))
+      } finally {
+        running = false
+      }
+    }
+
+    // Nothing on screen consumes the health result while the window is hidden, so a background
+    // window only polls when it becomes visible again. Returning to the foreground refreshes
+    // immediately, which also makes the indicator correct as soon as the window is shown.
+    const tick = () => {
+      if (document.visibilityState !== "visible") return
+      void refresh()
     }
 
     void refresh()
-    const id = setInterval(() => void refresh(), pollMs)
+    const id = setInterval(tick, pollMs)
+    makeEventListener(document, "visibilitychange", tick)
+
     onCleanup(() => {
       dead = true
       clearInterval(id)

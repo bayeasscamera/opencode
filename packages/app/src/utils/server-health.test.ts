@@ -175,4 +175,24 @@ describe("checkServerHealth", () => {
     expect(count).toBe(6)
     expect(result).toEqual({ healthy: false })
   })
+
+  test("does not retry a server that answers with an unhealthy payload", async () => {
+    // A server that answers is not a transport failure: the answer is authoritative, so the pass
+    // costs a single request and no retry delay. Only unreachable servers are retried.
+    let count = 0
+    const fetch = (async (input: RequestInfo | URL) => {
+      count += 1
+      const url = input instanceof URL ? input : new URL(input instanceof Request ? input.url : input)
+      if (url.pathname === "/api/health") return Response.json({ healthy: false })
+      return Response.json({ healthy: false })
+    }) as unknown as typeof globalThis.fetch
+
+    const started = Date.now()
+    const result = await checkServerHealth(server, fetch)
+    const elapsed = Date.now() - started
+
+    expect(count).toBe(1)
+    expect(result).toEqual({ healthy: false })
+    expect(elapsed).toBeLessThan(50)
+  })
 })
