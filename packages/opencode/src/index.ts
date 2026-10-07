@@ -32,6 +32,23 @@ import { Heap } from "./cli/heap"
 
 const args = hideBin(process.argv)
 
+// This CLI still mounts the legacy session runtime from `src/session/` alongside the current one in
+// `@opencode-ai/core`. Retiring it is tracked by specs/v2/legacy-decommission.md; until then, the
+// remaining entry points that build it are:
+//
+//   - `src/effect/app-runtime.ts` registers `SessionPrompt.node`, so every consumer of `AppRuntime`
+//     inherits the legacy loop: `src/cli/tui/worker.ts` (the TUI), `src/cli/effect-cmd.ts` (the base
+//     for Effect-based commands) and `src/project/instance-runtime.ts` (per-directory instances).
+//   - `src/server/routes/instance/httpapi/server.ts` mounts `SessionPrompt.node` next to
+//     `SessionV2.node`; `handlers/session.ts` drives the legacy prompt/command/shell surface
+//     through `SessionPrompt.Service`.
+//   - `src/cli/cmd/github.handler.ts` drives `SessionPrompt.Service` directly.
+//
+// Two imports are not consumers: `server/routes/instance/httpapi/groups/session.ts` reuses the
+// legacy payload schemas, and this file does not reach the runtime at all.
+// `packages/core/test/architecture-boundary.test.ts` stops the current packages from importing this
+// one, so the overlap cannot grow unnoticed.
+
 function show(out: string) {
   const text = out.trimStart()
   if (!text.startsWith("opencode ")) {
