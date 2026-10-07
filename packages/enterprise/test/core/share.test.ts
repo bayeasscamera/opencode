@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test"
 import { Share } from "../../src/core/share"
 import { Storage } from "../../src/core/storage"
 import { Identifier } from "@opencode-ai/core/util/identifier"
+import { useMemoryStorage } from "./storage-adapter"
+
+useMemoryStorage()
 
 describe.concurrent("core.share", () => {
   test("should create a share", async () => {

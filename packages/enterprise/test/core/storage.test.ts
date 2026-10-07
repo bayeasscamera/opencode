@@ -1,5 +1,8 @@
 import { describe, expect, test, afterAll } from "bun:test"
 import { Storage } from "../../src/core/storage"
+import { useMemoryStorage } from "./storage-adapter"
+
+useMemoryStorage()
 
 describe("core.storage", () => {
   test("should list files with after and before range", async () => {

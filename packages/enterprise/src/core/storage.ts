@@ -83,12 +83,25 @@ export namespace Storage {
     return createAdapter(client, `https://${accountId}.r2.cloudflarestorage.com`, process.env.OPENCODE_STORAGE_BUCKET!)
   }
 
-  const adapter = lazy(() => {
+  const remote = lazy(() => {
     const type = process.env.OPENCODE_STORAGE_ADAPTER
     if (type === "r2") return r2()
     if (type === "s3") return s3()
     throw new Error("No storage adapter configured")
   })
+
+  // Tests and embedders can install a local adapter. Unset by default so production keeps using
+  // the adapter selected by OPENCODE_STORAGE_ADAPTER.
+  let override: Adapter | undefined
+
+  /** Replaces the resolved adapter, or clears the override when omitted. Returns the previous value. */
+  export function useAdapter(next?: Adapter) {
+    const previous = override
+    override = next
+    return previous
+  }
+
+  const adapter = () => override ?? remote()
 
   function resolve(key: string[]) {
     return key.join("/") + ".json"
