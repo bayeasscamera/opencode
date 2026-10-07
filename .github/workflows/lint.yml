@@ -1,0 +1,26 @@
+name: lint
+
+on:
+  pull_request:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      # `bun run lint` is oxlint with .oxlintrc.json (type-aware rules). It reports warnings
+      # only, so this gate fails on errors; tighten with --deny-warnings once the warning
+      # backlog is cleared.
+      - name: Run oxlint
+        run: bun run lint

@@ -1,0 +1,21 @@
+name: "Setup gitleaks"
+description: "Install a pinned gitleaks binary"
+inputs:
+  version:
+    description: "gitleaks release version"
+    required: false
+    default: "8.30.1"
+runs:
+  using: "composite"
+  steps:
+    - name: Install gitleaks
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="${{ inputs.version }}"
+        archive="gitleaks_${version}_linux_x64.tar.gz"
+        curl -sSL -o "$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${archive}"
+        mkdir -p "$RUNNER_TEMP/gitleaks"
+        tar xzf "$archive" -C "$RUNNER_TEMP/gitleaks" gitleaks
+        echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+        "$RUNNER_TEMP/gitleaks/gitleaks" version

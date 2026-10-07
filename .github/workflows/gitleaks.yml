@@ -1,0 +1,64 @@
+name: gitleaks
+
+on:
+  pull_request:
+  push:
+    branches: [dev]
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        uses: ./.github/actions/setup-gitleaks
+
+      # The working-tree scan is the blocking gate. It reads .gitleaks.toml, whose allowlists are
+      # limited to values triaged as non-secret (publishable keys, test fixtures, generated
+      # sources, localisation strings).
+      - name: Scan working tree
+        run: gitleaks detect --no-git --config .gitleaks.toml --redact --verbose --exit-code 1
+
+      # A secret committed and then removed inside the same branch only exists in its commits.
+      - name: Scan pull request commits
+        if: github.event_name == 'pull_request'
+        run: |
+          base=$(git merge-base "origin/${{ github.base_ref }}" HEAD || true)
+          if [ -z "$base" ] || [ "$base" = "$(git rev-parse HEAD)" ]; then
+            echo "No new commits to scan"
+            exit 0
+          fi
+          gitleaks detect --config .gitleaks.toml --redact --verbose --exit-code 1 --log-opts="$base..HEAD"
+
+      # The full-history audit reports the pre-existing backlog (deleted .stats.yml files,
+      # benchmark fixtures, recorded HTTP payloads). Report-only until that backlog is resolved,
+      # so it cannot block unrelated work.
+      - name: Audit full history
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          gitleaks detect --config .gitleaks.toml --redact --verbose --report-format json --report-path gitleaks-history.json || true
+          if [ -f gitleaks-history.json ]; then
+            echo "### Gitleaks history findings" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            head -c 60000 gitleaks-history.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload history report
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gitleaks-history
+          if-no-files-found: ignore
+          retention-days: 14
+          path: gitleaks-history.json

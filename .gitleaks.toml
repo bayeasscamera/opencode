@@ -1,0 +1,65 @@
+# Gitleaks configuration for the opencode monorepo.
+#
+# The default ruleset flags high-entropy values in shapes that occur legitimately in this codebase:
+#   - localisation strings ending in "API." followed by a quoted value
+#   - SolidJS `key: "…"` props and keyboard shortcuts such as `keybind: "shift+alt+arrowup"`
+#   - generated SDK parameter maps such as `{ key: "questionV2Reply", map: "body" }`
+#   - test fixtures and recorded HTTP payloads that intentionally contain example keys
+#
+# Every entry below was triaged by hand: none is a live credential. Line and path allowlists are
+# deliberately narrow so that a real key added to the repository is still caught.
+title = "opencode"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Triaged false positives, publishable identifiers, and placeholder values."
+regexes = [
+  # Publishable Stripe test key used by the local console dev command; publishable keys are
+  # intentionally shipped to browsers.
+  '''pk_test_51RtuLNE7fOCwHSD4mewwzFejyytjdGoSDK7CAvhbffwaZnPbNb2rwJICw6LTOXCmWO320fSNXvb5NzI08RZVkAxd00syfqrW7t''',
+  # DigitalOcean OAuth client id: public by design, not a client secret.
+  '''b1a6c5158156caac821fd1b30253ca8acb52454a48fa744420e41889cb589f82''',
+]
+
+paths = [
+  # Localisation catalogues: a translated sentence ending in "API." followed by a quoted value
+  # trips the generic-api-key entropy heuristic across every locale file.
+  '''packages/console/app/src/i18n/.*\.ts$''',
+  # HTTP recorder suites assert that credentials are redacted; the payloads are deliberately
+  # fake (sk-123…, AIzaSy…) and would otherwise mask a real regression in redaction coverage.
+  '''packages/http-recorder/test/.*\.ts$''',
+  # Documentation that shows a literal Authorization header in a curl example.
+  '''packages/docs/.*\.mdx$''',
+  # Generated SDK sources; regenerate rather than edit.
+  '''packages/sdk/js/(src/)?(v2/)?gen/.*''',
+  # Commands and timeline fixtures use identifier-like values ("prt_key_01_read", "questionV2Reply").
+  '''packages/session-ui/src/components/tool-count-summary\.tsx$''',
+  '''packages/sdk/js/src/v2/gen/.*''',
+  '''packages/app/e2e/.*''',
+  # TUI config fixtures and a string-union type alias named *Key.
+  '''packages/tui/test/.*''',
+  '''packages/app/src/context/language\.tsx$''',
+  # Stripe idempotency keys are generated per request, never secret.
+  '''packages/console/app/src/routes/stripe/webhook\.ts$''',
+  # Build output is gitignored; a filesystem scan would otherwise read minified bundles where
+  # unrelated high-entropy strings appear next to "key:".
+  '''packages/desktop/(out|dist)/.*''',
+  '''packages/opencode/dist/.*''',
+  '''packages/sdk/js/dist/.*''',
+  '''.*\.asar$''',
+]
+
+[[rules]]
+id = "generic-api-key"
+[ rules.allowlist ]
+description = "Keyboard shortcuts and object keys are not credentials."
+regexTarget = "line"
+regexes = [
+  '''keybind:\s*"[a-z+]+"''',
+  '''^\s*key:\s*"[A-Za-z_][A-Za-z0-9_]*",?\s*$''',
+  '''key:\s*"[A-Za-z_][A-Za-z0-9_]*",\s*(map|in):''',
+  '''API\."''',
+  '''prt_key_\d+''',
+]
