@@ -1,0 +1,25 @@
+#!/bin/sh
+set -e
+
+# Format the files this commit touches. Prettier is deliberately not a repository-wide gate: a
+# large part of the tree is not formatted yet, and reformatting it is a separate change.
+files=$(git diff --cached --name-only --diff-filter=ACMR \
+  | grep -E '\.(js|jsx|ts|tsx|json|jsonc|css|md|mdx|yml|yaml|html)$' \
+  | grep -vE '(^|/)(dist|out|gen|generated|node_modules)/|\.gen\.(ts|tsx)$|^packages/sdk/openapi\.json$' \
+  || true)
+
+if [ -z "$files" ]; then
+  exit 0
+fi
+
+# Skip rather than block when the formatter is unavailable. Formatting is advisory here, so a
+# machine without Bun should not be unable to commit.
+if ! command -v bunx >/dev/null 2>&1; then
+  echo "pre-commit: bunx not found, skipping formatting" >&2
+  exit 0
+fi
+
+# Prettier rewrites the working tree, so re-stage the result; otherwise the index would keep the
+# unformatted content and the commit would not match what was checked.
+echo "$files" | xargs bunx prettier --write --
+echo "$files" | xargs git add --
