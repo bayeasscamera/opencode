@@ -28,18 +28,41 @@ merge**; the differences below live in the pipeline around it.
 
 ## Divergences the merge has to decide
 
-| #   | Aspect              | V1 (legacy)                                                     | V2 (current)                                                                                  | Risk if ignored                                          |
-| --- | ------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| 1   | Rule vocabulary     | `permission / pattern / action`                                 | `action / resource / effect`                                                                  | silent translation gaps                                  |
-| 2   | Ruleset source      | **caller-supplied** on each `ask` (`AskInput.ruleset`)          | resolved from the **agent** (`agents.resolve`)                                                | a caller stops passing rules → everything becomes `ask`  |
-| 3   | "always" answers    | **in memory**, per `InstanceState`, lost on restart             | **on disk**, project-scoped (`PermissionSaved`)                                               | approvals survive (or not) differently than users expect |
-| 4   | Deny vs saved allow | ruleset then `approved`, `findLast` → a later allow **can** win | explicit hard-deny pass first, so a persisted allow **cannot** override an agent deny         | **security-relevant**: a bypass appears or disappears    |
-| 5   | Contract            | `ask` throws `DeniedError` and awaits the prompt                | `ask` returns `{ id, effect }`; `assert` throws and awaits; `prompt:false` relaxes only `ask` | callers must migrate one by one                          |
-| 6   | Events              | `permission.asked` / `.replied`                                 | `permission.v2.asked` / `.replied`                                                            | App/TUI must migrate before V1 is deleted                |
-| 7   | Scope               | `InstanceState` per directory                                   | Location node (`makeLocationNode`)                                                            | parallel state during the transition                     |
-| 8   | Config → rules      | `fromConfig` with `~` / `$HOME` expansion                       | **no equivalent** in V2                                                                       | `~` patterns silently stop being expanded                |
-| 9   | Tool filtering      | `disabled` / `visibleTools`                                     | `ToolRegistry.whollyDisabled` (M3)                                                            | tool lists diverge                                       |
-| 10  | Logging             | `Effect.logInfo("evaluated", …)` on every decision              | none                                                                                          | noise is removed or kept deliberately                    |
+| #   | Aspect              | V1 (legacy)                                                            | V2 (current)                                                                                  | Risk if ignored                                           |
+| --- | ------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| 1   | Rule vocabulary     | `permission / pattern / action`                                        | `action / resource / effect`                                                                  | silent translation gaps                                   |
+| 2   | Ruleset source      | **caller-supplied** on each `ask` (`AskInput.ruleset`)                 | resolved from the **agent** (`agents.resolve`)                                                | a caller stops passing rules → everything becomes `ask`   |
+| 3   | "always" answers    | **in memory**, per `InstanceState`, lost on restart                    | **on disk**, project-scoped (`PermissionSaved`)                                               | approvals survive (or not) differently than users expect  |
+| 4   | Deny vs saved allow | ruleset then `approved`, `findLast` → a later allow **can** win        | explicit hard-deny pass first, so a persisted allow **cannot** override an agent deny         | **security-relevant**: a bypass appears or disappears     |
+| 5   | Contract            | `ask` throws `DeniedError` and awaits the prompt                       | `ask` returns `{ id, effect }`; `assert` throws and awaits; `prompt:false` relaxes only `ask` | callers must migrate one by one                           |
+| 6   | Events              | `permission.asked` / `.replied`                                        | `permission.v2.asked` / `.replied`                                                            | App/TUI must migrate before V1 is deleted                 |
+| 7   | Scope               | `InstanceState` per directory                                          | Location node (`makeLocationNode`)                                                            | parallel state during the transition                      |
+| 8   | Config → rules      | `fromConfig` expands `~/`, `~`, `$HOME/`, `$HOME` for **every** action | `expandPermissions` expands the same forms (plus `$HOME\`) but **only** for path actions      | a `bash` pattern is expanded by V1 and left literal by V2 |
+| 9   | Tool filtering      | `disabled` / `visibleTools`                                            | `ToolRegistry.whollyDisabled` (M3)                                                            | tool lists diverge                                        |
+| 10  | Logging             | `Effect.logInfo("evaluated", …)` on every decision                     | none                                                                                          | noise is removed or kept deliberately                     |
+
+### Verified divergence: how a `bash` resource is interpreted
+
+Measured, not inferred (the V1 side is pinned by
+`packages/opencode/test/permission/config-rules.test.ts`):
+
+```jsonc
+// V1 — Permission.fromConfig({ bash: { "~/bin/*": "deny" } })
+{ "permission": "bash", "pattern": "/Users/<you>/bin/*", "action": "deny" } // expanded
+
+// V2 — expandPermissions leaves it literal, because "bash" is not a path action
+{ "action": "bash", "resource": "~/bin/*", "effect": "deny" } // not expanded
+```
+
+The current runtime is deliberate about this. `packages/core/src/config/plugin/agent.ts:120-121`
+explains why: a bash resource is raw shell text, so rewriting `$HOME/private/**` would miss
+`$HOME/private/key`, and safe expansion would need shell-aware parsing. The expanded path actions are
+`external_directory`, `read` and `edit` (`:31`).
+
+**Consequence for the merge:** a config rule denying a `bash` pattern containing `~` or `$HOME`
+matches different commands under each evaluator. Adopting V2's scoping is a **behaviour change that can
+remove a deny**, so it needs its own review step and a test proving which commands still match — it must
+not ride along inside a refactor.
 
 ## Migration order
 
@@ -47,9 +70,10 @@ Each step is a separate PR, and the parity test guards every one of them. Steps 
 call site.
 
 1. **M2.1 — lock the matcher.** Done: `packages/opencode/test/permission/matcher-parity.test.ts`.
-2. **M2.2 — vocabulary bridge.** One translation helper between the two rule shapes, proven
-   round-trip by the parity corpus extended to cover `fromConfig` output (including `~`/`$HOME`).
-   Still no behaviour change.
+2. **M2.2 — vocabulary bridge.** One translation helper between the two rule shapes, proven by the
+   parity corpus extended with the config cases pinned in
+   `packages/opencode/test/permission/config-rules.test.ts`. The bridge must adopt **V2's
+   action-scoped expansion**, not V1's unconditional one. Still no behaviour change.
 3. **M2.3 — single ruleset source.** Feed V1's `ask` from the V2 resolver (agent + session) instead
    of `AskInput.ruleset`, then stop accepting a caller-supplied ruleset. Divergence #2 closes; if a
    caller forgets, the resolver answers `deniedByDefault` rather than silently asking.
