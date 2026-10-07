@@ -202,7 +202,7 @@ export function detectDesktopNativeLocale(languages: readonly string[]): Desktop
     if (["no", "nb", "nn"].includes(source.language)) return "no"
     const match = DESKTOP_NATIVE_LOCALES.find((candidate) => {
       const target = locale(DESKTOP_NATIVE_LOCALE_TAGS[candidate])
-      return target?.language === source.language && target.script === source.script
+      return target?.language === source.language && normalizedScript(target.script) === normalizedScript(source.script)
     })
     if (match) return match
   }
@@ -211,6 +211,16 @@ export function detectDesktopNativeLocale(languages: readonly string[]): Desktop
 
 export function desktopNativePluralCategories(locale: DesktopNativeLocale) {
   return new Intl.PluralRules(DESKTOP_NATIVE_LOCALE_TAGS[locale]).resolvedOptions().pluralCategories
+}
+
+// ICU ships the Nastaliq variant under both its own ISO 15924 code (`Aran`) and the base Arabic
+// code (`Arab`), and which one `Intl.Locale.maximize()` returns depends on the bundled CLDR
+// version. The locale table below uses `Arab`, so compare the base code on both sides.
+const SCRIPT_ALIASES: Readonly<Record<string, string>> = { Aran: "Arab" }
+
+function normalizedScript(script: string | undefined) {
+  if (script === undefined) return undefined
+  return SCRIPT_ALIASES[script] ?? script
 }
 
 function locale(value: string) {
