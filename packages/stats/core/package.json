@@ -16,6 +16,7 @@
     "./stat-sync": "./src/stat-sync.ts"
   },
   "scripts": {
+    "test": "bun test src",
     "db:generate": "drizzle-kit generate --config=drizzle.config.ts",
     "db:check-unique-users": "bun src/ensure-unique-users.ts --check",
     "db:ensure-unique-users": "bun src/ensure-unique-users.ts",
