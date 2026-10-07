@@ -198,11 +198,14 @@ nom du produit, le protocole (`opencode` / `opencode-asse`) et la publication.
 - **Sous-agent : comportement réel et limites** (vérifié le 05/10/2026). `subagent` exécute
   désormais un vrai run : il crée une session enfant (`parentID`), y déclare un agent éphémère
   `subagent-<rôle>-<taskId>` (25 étapes maximum), lui applique un jeu de règles, envoie le prompt,
-  attend la fin du run et renvoie la réponse du modèle. **Tout cela n'a été testé qu'avec un faux
-  modèle** : les tests couvrent bien le cycle complet (session enfant, agent éphémère, règles, attente
-  de fin, extraction de la réponse) mais avec un modèle factice qui rejoue des tours scriptés. Aucun
-  appel à un vrai fournisseur n'a été exécuté, donc la latence réelle, le coût, les erreurs de
-  fournisseur et la qualité des réponses d'un vrai modèle ne sont pas vérifiés. Points à connaître :
+  attend la fin du run et renvoie la réponse du modèle. **Validé contre un vrai modèle le
+  07/10/2026** — harnais opt-in `packages/core/test/subagent-live.test.ts`
+  (`OPENCODE_LIVE_SUBAGENT=1`, gateway local OpenAI-compatible → `claude-opus-5-5`) : cycle complet
+  parent → enfant → retour, statut `completed`, réponse réelle extraite et renvoyée à l'appelant,
+  **94,7 s** de bout en bout (timeout par défaut 600 s, `tool/subagent.ts:32` — marge ≈ 6×).
+  Restent non mesurés : le coût réel, les erreurs fournisseur (429/5xx) et la stabilité en usage
+  prolongé. La mécanique complète (session enfant, agent éphémère, règles, attente de fin,
+  extraction) reste couverte hors-ligne par le modèle scripté. Points à connaître :
   - **Liste d'autorisés, pas liste d'interdits.** Les rôles en lecture seule (`researcher`,
     `code_reviewer`, `brainstormer`, `critic`, `outliner`) reçoivent d'abord un refus global, puis
     uniquement les outils de leur `recommendedTools` qui n'écrivent pas. Un enfant `researcher` reçoit
@@ -244,7 +247,9 @@ _(section à compléter)_
       reste à valider avec des certificats valides sur une machine de release
 - [x] Brancher un vrai moteur d'exécution pour les sous-agents — fait : session enfant réelle, liste
       d'autorisés, réouverture refusée
-- [ ] Valider le sous-agent contre un vrai modèle : les tests n'utilisent qu'un faux modèle
+- [x] Valider le sous-agent contre un vrai modèle — fait le 07/10/2026 via le harnais live
+      `packages/core/test/subagent-live.test.ts` (cycle complet, 94,7 s) ; restent le coût et les
+      erreurs fournisseur à couvrir
 - [x] Ajouter une vérification de permission aux outils qui n'en avaient aucune — fait pour `browser`,
       `computer`, `mcp_store`, `memory_record`, `mod`, `read_image`, `read_pdf`, `schedule` et
       `observer`
