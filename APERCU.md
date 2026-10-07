@@ -178,10 +178,14 @@ nom du produit, le protocole (`opencode` / `opencode-asse`) et la publication.
   présents sur la machine de build.
 - **Le sidecar V1 dépend de `../opencode/dist/node`** : le build desktop échoue si le moteur n'a pas
   été compilé au préalable (le script `prebuild` s'en charge).
-- **Client vendorisé : migration en cours.** `packages/session-ui` est passé au workspace
-  (`workspace:*`) et `packages/client` expose un sous-chemin `@opencode-ai/client/promise` pour la
-  surface legacy. `packages/app` épingle encore le tarball
-  `vendor/opencode-ai-client-1.17.13-v2.tgz` (`packages/app/package.json`). Non commité au 06/10/2026.
+- **Client vendorisé : migration différée.** `packages/session-ui` et `packages/sdk-next` utilisent
+  le workspace (`workspace:*`) et `packages/client` expose un sous-chemin
+  `@opencode-ai/client/promise`. `packages/app` reste épinglé sur le tarball
+  `vendor/opencode-ai-client-1.17.13-v2.tgz` : le switch direct a été audité et **échoue**
+  (83 erreurs de types — les façades `SessionApi`/`AgentApi`/… absentes du client généré, tout le
+  groupe MCP supprimé, et des renommages singulier→pluriel type `AgentListInput`→`AgentsListInput`).
+  À traiter comme chantier dédié : soit un pont de compat dans `packages/client/src/promise.ts`,
+  soit la migration des ~30 fichiers d'`app` vers la surface générée.
 - **Timeout de démarrage** : 60 s pour lancer le sidecar, 30 s pour la vérification de santé. Sur une
   machine lente, l'app peut sembler bloquée.
 - **Le canal `asse` n'a pas de jeu d'icônes propre** : il réutilise celui de `dev` (volontaire,
@@ -246,8 +250,8 @@ _(section à compléter)_
       `observer`
 - [x] Traiter le dernier outil sans vérification : `observer` (`dismiss`/`reset` sous
       `PermissionV2.assert`, `34a5a1943e`)
-- [ ] Remplacer le client vendorisé par le package du workspace — `session-ui` fait, `packages/app`
-      encore sur le tarball
+- [ ] Remplacer le client vendorisé par le package du workspace — `session-ui`/`sdk-next` faits ;
+      `app` en attente : le client généré lui doit une surface promise complète (voir §8)
 - [ ] Migrer les modules `mod/` et `observer/` vers l'architecture Effect (Location-scoped) — le
       sous-agent l'est déjà, sauf son accesseur de publication
 - [ ] À confirmer : tableau de bord de suivi des coûts par modèle
